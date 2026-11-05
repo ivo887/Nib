@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366F1"/>
+      <stop offset="0.5" stop-color="#4338CA"/>
+      <stop offset="1" stop-color="#231C7A"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.3" cy="0.2" r="0.8">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="nib" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E2E4F7"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFD166"/>
+      <stop offset="1" stop-color="#FF9F43"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0B0930" flood-opacity="0.30"/>
+    </filter>
+    <filter id="nibshadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="-3" dy="5" stdDeviation="4" flood-color="#120D4D" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect x="16" y="14" width="224" height="224" rx="52" fill="url(#tile)" filter="url(#shadow)"/>
+  <rect x="16" y="14" width="224" height="224" rx="52" fill="url(#glow)"/>
+  <g fill="url(#ink)"><path d="M 36.68 196.71 L 37.62 198.38 L 38.62 199.98 L 39.70 201.50 L 40.85 202.93 L 42.08 204.28 L 43.38 205.55 L 44.74 206.73 L 46.18 207.83 L 47.68 208.84 L 49.24 209.76 L 50.86 210.59 L 52.54 211.33 L 54.28 211.98 L 56.06 212.53 L 57.89 212.99 L 59.77 213.36 L 61.69 213.64 L 63.64 213.82 L 65.63 213.91 L 67.65 213.90 L 69.70 213.79 L 71.78 213.59 L 73.88 213.29 L 76.00 212.89 L 78.13 212.39 L 80.28 211.80 L 82.44 211.11 L 84.60 210.32 L 86.77 209.44 L 88.94 208.45 L 91.11 207.36 L 93.28 206.17 L 95.43 204.89 L 97.58 203.50 L 99.71 202.01 L 101.82 200.42 L 103.92 198.73 L 105.99 196.94 L 108.03 195.04 L 110.05 193.04 L 112.03 190.94 L 113.97 188.74 L 115.88 186.44 L 117.74 184.03 L 119.56 181.51 L 121.33 178.90 L 123.05 176.18 L 124.71 173.35 L 111.29 166.65 L 110.15 169.23 L 108.95 171.73 L 107.70 174.14 L 106.40 176.48 L 105.06 178.73 L 103.67 180.89 L 102.24 182.97 L 100.77 184.97 L 99.26 186.89 L 97.72 188.72 L 96.15 190.47 L 94.55 192.14 L 92.92 193.72 L 91.27 195.22 L 89.60 196.64 L 87.91 197.97 L 86.20 199.22 L 84.48 200.39 L 82.74 201.47 L 81.00 202.47 L 79.26 203.38 L 77.50 204.21 L 75.75 204.95 L 74.00 205.61 L 72.26 206.19 L 70.52 206.67 L 68.79 207.08 L 67.07 207.40 L 65.37 207.63 L 63.69 207.78 L 62.02 207.84 L 60.38 207.82 L 58.76 207.71 L 57.17 207.52 L 55.61 207.23 L 54.08 206.86 L 52.59 206.40 L 51.13 205.85 L 49.71 205.22 L 48.34 204.49 L 47.01 203.67 L 45.73 202.76 L 44.51 201.75 L 43.34 200.65 L 42.23 199.46 L 41.18 198.17 L 40.21 196.78 L 39.32 195.29 Z"/><circle cx="38" cy="196" r="1.50"/><circle cx="118" cy="170" r="7.50"/></g>
+  <g transform="translate(163.00 125.00) rotate(45) scale(0.86)" filter="url(#nibshadow)">
+    <path d="M 0 74 C 7 44, 36 20, 36 -8 L 31 -66 Q 0 -74 -31 -66 L -36 -8 C -36 20 -7 44 0 74 Z" fill="url(#nib)"/>
+    <path d="M -33.5 -40 Q 0 -46 33.5 -40" fill="none" stroke="#C7CAEC" stroke-width="3.5"/>
+    <circle cx="0" cy="-8" r="8.5" fill="#2F2A9F"/>
+    <rect x="-2.6" y="-2" width="5.2" height="70" rx="2.6" fill="#2F2A9F"/>
+  </g>
+</svg>

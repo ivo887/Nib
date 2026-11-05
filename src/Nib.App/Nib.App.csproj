@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    WinUI 3 shell. Unpackaged and self-contained (no framework package to install, xcopy deployable,
+    launched directly by the perf runner). Release builds are Native AOT: the biggest single cold-start win
+    for WinUI 3 apps. If a dependency ever blocks AOT, set PublishAot=false and PublishReadyToRun=true.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>Nib.App</RootNamespace>
+    <AssemblyName>Nib</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Nib.ico</ApplicationIcon>
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <WindowsAppSdkDeploymentManagerInitialize>false</WindowsAppSdkDeploymentManagerInitialize>
+    <SelfContained>true</SelfContained>
+    <!-- Keep ETW EventSource working under AOT/trimming (perf suite). -->
+    <EventSourceSupport>true</EventSourceSupport>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Speed</OptimizationPreference>
+  </PropertyGroup>
+  <!--
+    CPU-tuned Native AOT builds. By default AOT code runs on any x64 CPU. NibCpu lets the compiler use
+    newer instructions (AVX2, FMA, BMI2) for the geometry and PDF code:
+      -p:NibCpu=lunarlake   Intel Core Ultra 200V (Lunar Lake), e.g. the Core Ultra 7 256V
+      -p:NibCpu=native      whatever the CPU you build on supports (build on the device itself)
+    The resulting exe refuses to start on a CPU without those instructions, so keep the default build
+    for sharing.
+  -->
+  <PropertyGroup Condition="'$(NibCpu)' == 'lunarlake' and '$(RuntimeIdentifier)' == 'win-x64'">
+    <!-- x86-64-v3 = AVX2 + BMI1/2 + FMA + LZCNT + MOVBE. ILC 10 has no separate bmi2/fma/popcnt names. -->
+    <IlcInstructionSet>x86-64-v3,aes</IlcInstructionSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(NibCpu)' == 'native'">
+    <IlcInstructionSet>native</IlcInstructionSet>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.9457" />
+    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nib.Core\Nib.Core.csproj" />
+    <ProjectReference Include="..\Nib.Storage\Nib.Storage.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The exe icon comes from ApplicationIcon; the window and taskbar icon is set at runtime from this copy. -->
+    <Content Include="Assets\Nib.ico" Link="Nib.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+</Project>

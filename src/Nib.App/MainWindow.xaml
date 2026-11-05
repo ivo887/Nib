@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Nib.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:canvas="using:Microsoft.Graphics.Canvas.UI.Xaml"
+    xmlns:shell="using:Nib.App.Shell"
+    Title="Nib">
+
+    <Grid x:Name="Root" Background="{StaticResource DeskBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Title bar: sidebar toggle, page title, (toolbar when docked on top), drag area, caption buttons. -->
+        <Grid x:Name="TitleBar" Grid.Row="0" Background="{ThemeResource LayerFillColorDefaultBrush}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition x:Name="CaptionColumn" Width="138" />
+            </Grid.ColumnDefinitions>
+            <Button x:Name="SidebarToggle" Grid.Column="0" Width="40" Height="40" Margin="4,0,0,0" Padding="0"
+                    Background="Transparent" BorderThickness="0" Click="SidebarToggle_Click"
+                    ToolTipService.ToolTip="Show or hide notebooks (Ctrl+Shift+B)" AutomationProperties.Name="Show or hide notebooks">
+                <FontIcon Glyph="&#xE700;" FontSize="16" />
+            </Button>
+            <TextBox x:Name="TitleBox" Grid.Column="1" MinWidth="120" MaxWidth="320" Width="220" Margin="4,0,8,0"
+                     VerticalAlignment="Center" PlaceholderText="Untitled page" BorderThickness="0"
+                     Background="Transparent" FontSize="15" FontWeight="SemiBold"
+                     TextChanged="TitleBox_TextChanged" AutomationProperties.Name="Page title" />
+            <ContentControl x:Name="TitleToolbarHost" Grid.Column="2" VerticalAlignment="Center"
+                            HorizontalContentAlignment="Stretch" IsTabStop="False" />
+            <Border x:Name="DragRegion" Grid.Column="3" Background="Transparent" />
+        </Grid>
+
+        <SplitView x:Name="Split" Grid.Row="1" IsPaneOpen="True" DisplayMode="Inline" OpenPaneLength="280"
+                   PaneBackground="Transparent" PanePlacement="Left">
+            <SplitView.Pane>
+                <shell:Sidebar x:Name="SidebarControl" />
+            </SplitView.Pane>
+
+            <Grid x:Name="WorkGrid">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <ContentControl x:Name="EdgeToolbarHost" Grid.Row="2" Grid.Column="1" HorizontalAlignment="Center"
+                                VerticalAlignment="Center" IsTabStop="False"
+                                Background="{ThemeResource LayerFillColorDefaultBrush}" />
+
+                <!-- The page: GPU ink surface plus a thin XAML overlay for the text editor and selection tools. -->
+                <Grid x:Name="PageHost" Grid.Row="1" Grid.Column="1">
+                    <canvas:CanvasSwapChainPanel x:Name="InkPanel" AutomationProperties.Name="Page" />
+                    <Canvas x:Name="Overlay" />
+                    <Border x:Name="SelectionBar" Visibility="Collapsed" CornerRadius="8" Padding="4"
+                            Background="{ThemeResource AcrylicInAppFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}" BorderThickness="1"
+                            HorizontalAlignment="Left" VerticalAlignment="Top">
+                        <StackPanel x:Name="SelectionBarItems" Orientation="Horizontal" Spacing="2" />
+                    </Border>
+                    <Border x:Name="Toast" Visibility="Collapsed" CornerRadius="8" Padding="12,6" Margin="0,0,0,24"
+                            HorizontalAlignment="Center" VerticalAlignment="Bottom" IsHitTestVisible="False"
+                            Background="{ThemeResource SystemControlBackgroundBaseHighBrush}">
+                        <TextBlock x:Name="ToastText" Foreground="{ThemeResource SystemControlForegroundAltHighBrush}" />
+                    </Border>
+                    <TextBlock x:Name="DebugText" Visibility="Collapsed" IsHitTestVisible="False" Margin="8"
+                               HorizontalAlignment="Right" VerticalAlignment="Top" FontFamily="Consolas" FontSize="12"
+                               Foreground="#FF00A000" />
+                </Grid>
+            </Grid>
+        </SplitView>
+    </Grid>
+</Window>

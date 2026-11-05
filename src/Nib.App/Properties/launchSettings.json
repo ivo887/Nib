@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "Nib (Unpackaged)": {
+      "commandName": "Project"
+    },
+    "Nib (developer overlay)": {
+      "commandName": "Project",
+      "commandLineArgs": "--overlay"
+    }
+  }
+}

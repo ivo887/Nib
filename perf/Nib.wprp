@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Windows Performance Recorder profile for Nib.
+  Record:   wpr -start perf\Nib.wprp!Nib -filemode
+            (write, pan, switch pages)
+            wpr -stop nib.etl
+  Analyze:  open nib.etl in Windows Performance Analyzer.
+            Generic Events → Nib-Performance: InkInputToPresent, Frame, UiThreadStall, PageSwitch, StartupMilestone.
+            GPU / DxgKrnl present and flip events give the true present-to-screen time per frame.
+-->
+<WindowsPerformanceRecorder Version="1.0" Author="Nib" Comments="Ink latency, frames, UI stalls">
+  <Profiles>
+    <SystemCollector Id="SystemCollector" Name="NT Kernel Logger">
+      <BufferSize Value="1024" />
+      <Buffers Value="256" />
+    </SystemCollector>
+    <EventCollector Id="EventCollector" Name="Nib Event Collector">
+      <BufferSize Value="1024" />
+      <Buffers Value="128" />
+    </EventCollector>
+
+    <SystemProvider Id="SystemProvider">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="Loader" />
+        <Keyword Value="CSwitch" />
+        <Keyword Value="ReadyThread" />
+        <Keyword Value="SampledProfile" />
+      </Keywords>
+      <Stacks>
+        <Stack Value="SampledProfile" />
+        <Stack Value="CSwitch" />
+      </Stacks>
+    </SystemProvider>
+
+    <!-- EventSource "Nib-Performance": provider GUID is derived from the name; WPR accepts the *Name form. -->
+    <EventProvider Id="NibPerformance" Name="*Nib-Performance" Level="5" />
+    <EventProvider Id="DxgKrnl" Name="802ec45a-1e99-4b83-9920-87c98277ba9d" Level="5">
+      <Keywords>
+        <Keyword Value="0x1" />
+      </Keywords>
+    </EventProvider>
+    <EventProvider Id="Dwm" Name="Microsoft-Windows-Dwm-Core" Level="4" />
+    <EventProvider Id="Win32kInput" Name="Microsoft-Windows-Win32k" Level="4">
+      <Keywords>
+        <Keyword Value="0x8000000000" />
+      </Keywords>
+    </EventProvider>
+
+    <Profile Id="Nib.Verbose.File" Name="Nib" Description="Nib ink latency and frame pacing" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="SystemCollector">
+          <SystemProviderId Value="SystemProvider" />
+        </SystemCollectorId>
+        <EventCollectorId Value="EventCollector">
+          <EventProviders>
+            <EventProviderId Value="NibPerformance" />
+            <EventProviderId Value="DxgKrnl" />
+            <EventProviderId Value="Dwm" />
+            <EventProviderId Value="Win32kInput" />
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

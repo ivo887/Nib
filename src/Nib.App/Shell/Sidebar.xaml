@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="Nib.App.Shell.Sidebar"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Nib.App.Shell"
+    xmlns:model="using:Nib.Core.Model">
+
+    <Grid Background="{ThemeResource LayerFillColorDefaultBrush}" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,1,0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Notebook picker -->
+        <Grid Grid.Row="0" Margin="8,8,8,4" ColumnSpacing="4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <ComboBox x:Name="NotebookBox" HorizontalAlignment="Stretch" AutomationProperties.Name="Notebook"
+                      SelectionChanged="NotebookBox_SelectionChanged" />
+            <Button Grid.Column="1" Width="34" Height="32" Padding="0" Click="AddNotebook_Click"
+                    ToolTipService.ToolTip="New notebook" AutomationProperties.Name="New notebook">
+                <FontIcon Glyph="&#xE710;" FontSize="14" />
+            </Button>
+        </Grid>
+
+        <!-- Sections -->
+        <Grid Grid.Row="1" Margin="12,6,8,2">
+            <TextBlock Text="Sections" Style="{StaticResource CaptionTextBlockStyle}" Opacity="0.7" VerticalAlignment="Center" />
+            <Button HorizontalAlignment="Right" Width="28" Height="24" Padding="0" Background="Transparent" BorderThickness="0"
+                    Click="AddSection_Click" ToolTipService.ToolTip="New section (Ctrl+T)" AutomationProperties.Name="New section">
+                <FontIcon Glyph="&#xE710;" FontSize="12" />
+            </Button>
+        </Grid>
+        <ListView x:Name="SectionList" Grid.Row="2" MaxHeight="220" SelectionMode="Single"
+                  CanReorderItems="True" AllowDrop="True" CanDragItems="True"
+                  SelectionChanged="SectionList_SelectionChanged" DragItemsCompleted="SectionList_DragItemsCompleted"
+                  RightTapped="SectionList_RightTapped" AutomationProperties.Name="Sections">
+            <ListView.ItemTemplate>
+                <DataTemplate x:DataType="local:SectionItem">
+                    <StackPanel Orientation="Horizontal" Spacing="10" Padding="2,6">
+                        <Rectangle Width="6" Height="18" RadiusX="2" RadiusY="2" Fill="{x:Bind ColorBrush}" />
+                        <TextBlock Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    </StackPanel>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+
+        <!-- Pages (virtualized) -->
+        <Grid Grid.Row="3">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid Margin="12,8,8,2">
+                <TextBlock Text="Pages" Style="{StaticResource CaptionTextBlockStyle}" Opacity="0.7" VerticalAlignment="Center" />
+                <Button HorizontalAlignment="Right" Width="28" Height="24" Padding="0" Background="Transparent" BorderThickness="0"
+                        Click="AddPage_Click" ToolTipService.ToolTip="New page (Ctrl+N)" AutomationProperties.Name="New page">
+                    <FontIcon Glyph="&#xE710;" FontSize="12" />
+                </Button>
+            </Grid>
+            <ListView x:Name="PageList" Grid.Row="1" SelectionMode="Single"
+                      CanReorderItems="True" AllowDrop="True" CanDragItems="True"
+                      SelectionChanged="PageList_SelectionChanged" DragItemsCompleted="PageList_DragItemsCompleted"
+                      RightTapped="PageList_RightTapped" AutomationProperties.Name="Pages">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="local:PageItem">
+                        <Grid Padding="{x:Bind Indent}" MinHeight="36">
+                            <TextBlock Text="{x:Bind Title}" Opacity="{x:Bind TitleOpacity}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,18,0" />
+                            <FontIcon Glyph="&#xE735;" FontSize="11" HorizontalAlignment="Right" Opacity="0.6" Visibility="{x:Bind FavoriteVisibility}" />
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+        </Grid>
+
+        <!-- Footer: things used weekly, not daily, stay small -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="6" Spacing="2">
+            <Button Click="Tags_Click" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="Tag summary" AutomationProperties.Name="Tag summary">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <FontIcon Glyph="&#xE8EC;" FontSize="14" />
+                    <TextBlock Text="Tags" />
+                </StackPanel>
+            </Button>
+            <Button Click="Recent_Click" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="Recent pages" AutomationProperties.Name="Recent pages">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <FontIcon Glyph="&#xE823;" FontSize="14" />
+                    <TextBlock Text="Recent" />
+                </StackPanel>
+            </Button>
+            <Button Click="Favorites_Click" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="Favorite pages" AutomationProperties.Name="Favorite pages">
+                <FontIcon Glyph="&#xE734;" FontSize="14" />
+            </Button>
+        </StackPanel>
+    </Grid>
+</UserControl>

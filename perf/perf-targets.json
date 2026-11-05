@@ -1,0 +1,11 @@
+{
+  "InputProcessingBudgetMs": 4,
+  "EffectivePenToPixelP95Ms": 20,
+  "MaxDroppedFramePercent": 1,
+  "UiStallMaxMs": 8,
+  "ColdStartMs": 1500,
+  "WarmStartMs": 500,
+  "PageSwitchP95Ms": 100,
+  "ToolApplyMaxMs": 0.5,
+  "ResizeReflowMaxFrames": 1
+}

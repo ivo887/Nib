@@ -1,0 +1,16 @@
+<Project>
+  <!-- Shared settings for every project in the solution. -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Deterministic>true</Deterministic>
+    <Authors>Nib</Authors>
+    <Product>Nib</Product>
+    <Version>0.1.0</Version>
+    <!-- Hot paths are written allocation-free; keep tiered PGO on for steady-state speed. -->
+    <TieredPGO>true</TieredPGO>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+</Project>

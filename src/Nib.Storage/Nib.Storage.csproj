@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Local-first storage: SQLite metadata + per-stroke blobs, accessed through the copy of SQLite that
+    ships with Windows (winsqlite3.dll, System32) via source-generated P/Invoke. No package dependency,
+    no native binaries to ship, nothing extra to load at startup. On Linux/macOS (unit tests) it binds
+    to the system libsqlite3.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Nib.Storage</RootNamespace>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Nib.Core\Nib.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Nib.Core.Tests" />
+  </ItemGroup>
+</Project>

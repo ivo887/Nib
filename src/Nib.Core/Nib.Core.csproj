@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Platform-independent core: data model, ink math (pressure / tilt / speed),
+    stroke geometry, spatial index, undo, gestures, layout math, binary formats,
+    vector PDF export and performance accounting. No package dependencies, so it
+    builds and unit-tests on any OS and is Native-AOT and trimming safe.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Nib.Core</RootNamespace>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Nib.Core.Tests" />
+    <InternalsVisibleTo Include="Nib" />
+  </ItemGroup>
+</Project>
