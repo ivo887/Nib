@@ -32,6 +32,8 @@ public static class NibModel
     private const float FountainBaseAngle = -MathF.PI / 4f;
     /// <summary>Default chisel orientation for the highlighter: long side vertical, good for marking lines of text.</summary>
     private const float HighlighterBaseAngle = MathF.PI / 2f;
+    /// <summary>Calligraphy edge angle: from lower-left to upper-right, 40 degrees.</summary>
+    private const float CalligraphyBaseAngle = -40f * Deg2Rad;
     /// <summary>Writing speed (units/ms) treated as "fast" for the speed-based width fallback (~3 in/s).</summary>
     private const float FastSpeed = 3f;
 
@@ -39,6 +41,9 @@ public static class NibModel
     public static float MaxExtent(PenKind kind, float width) => kind switch
     {
         PenKind.Pencil => width * 1.6f,
+        PenKind.Brush => width * 1.7f,
+        PenKind.Watercolor => width * 1.4f,
+        PenKind.Marker => width * 1.2f,
         PenKind.Highlighter => width * 0.85f,
         _ => width * 0.55f,
     };
@@ -117,6 +122,50 @@ public static class NibModel
                 f.Ry = MathF.Max(halfShort * (1f + 1.5f * t), 0.3f);
                 f.Angle = t > 0f ? LerpAngle(HighlighterBaseAngle, azimuth + MathF.PI / 2f, t) : HighlighterBaseAngle;
                 f.Strength = dyn.PressureEnabled ? 0.45f + 0.55f * response : 0.8f;
+                break;
+            }
+            case PenKind.Brush:
+            {
+                // Pressure already widened r; leaning lays the bristles on their side: broad along the lean, a touch narrower across.
+                f.Shape = t > 0.02f ? FootprintShape.Ellipse : FootprintShape.Circle;
+                f.Rx = MathF.Max(r * (1f + 2.2f * t), 0.15f);
+                f.Ry = MathF.Max(r * (1f - 0.25f * t), 0.12f);
+                f.Angle = azimuth;
+                f.Strength = 1f;
+                break;
+            }
+            case PenKind.Calligraphy:
+            {
+                // Crisp chisel: the lean swings the edge round (more strongly than the fountain pen); barrel twist adds on top.
+                float angle = CalligraphyBaseAngle;
+                if (t > 0f) angle = LerpAngle(angle, azimuth + MathF.PI / 2f, MathF.Min(t * 1.2f, 1f));
+                if ((flags & StrokeFlags.HasTwist) != 0 && p.Twist >= 0) angle += p.Twist * Deg2Rad;
+                f.Shape = FootprintShape.Rect;
+                f.Rx = MathF.Max(r, 0.3f);
+                f.Ry = MathF.Max(r * 0.12f, 0.15f);
+                f.Angle = angle;
+                f.Strength = 1f;
+                break;
+            }
+            case PenKind.Marker:
+            {
+                // Felt tip: leaning broadens the tip along the lean. Pressure only nudges how wet it is.
+                f.Shape = t > 0.02f ? FootprintShape.Ellipse : FootprintShape.Circle;
+                f.Rx = MathF.Max(r * (1f + 1.1f * t), 0.3f);
+                f.Ry = MathF.Max(r * (1f - 0.3f * t), 0.25f);
+                f.Angle = azimuth;
+                f.Strength = dyn.PressureEnabled ? 0.7f + 0.3f * response : 0.85f;
+                break;
+            }
+            case PenKind.Watercolor:
+            {
+                // A wet brush: pressure loads pigment, leaning spreads the wash wide and thins it.
+                f.Shape = t > 0.02f ? FootprintShape.Ellipse : FootprintShape.Circle;
+                f.Rx = MathF.Max(r * (1f + 1.6f * t), 0.5f);
+                f.Ry = MathF.Max(r * (1f - 0.35f * t), 0.4f);
+                f.Angle = azimuth;
+                float pigment = dyn.PressureEnabled ? 0.15f + 0.5f * response : 0.4f;
+                f.Strength = Math.Clamp(pigment * (1f - 0.35f * t), 0.06f, 1f);
                 break;
             }
             default:

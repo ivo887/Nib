@@ -87,7 +87,7 @@ public static class PdfExporter
     internal static void PaintContent(ExportPage page, RectF region, PdfPageCanvas canvas, StrokeGeometryBuilder builder, ITextOutliner? text)
     {
         foreach (var s in page.Strokes)
-            if (s.Kind == PenKind.Highlighter && s.Bounds.Intersects(region)) DrawStroke(s, canvas, builder);
+            if (s.Kind.IsBackgroundInk() && s.Bounds.Intersects(region)) DrawStroke(s, canvas, builder);
         if (text is not null)
         {
             var target = new PdfVectorTarget(canvas);
@@ -95,7 +95,7 @@ public static class PdfExporter
                 if (t.Bounds.Intersects(region)) text.Outline(t, target);
         }
         foreach (var s in page.Strokes)
-            if (s.Kind != PenKind.Highlighter && s.Bounds.Intersects(region)) DrawStroke(s, canvas, builder);
+            if (!s.Kind.IsBackgroundInk() && s.Bounds.Intersects(region)) DrawStroke(s, canvas, builder);
     }
 
     private static void DrawStroke(Stroke s, PdfPageCanvas canvas, StrokeGeometryBuilder builder)

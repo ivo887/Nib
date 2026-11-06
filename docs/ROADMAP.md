@@ -73,8 +73,7 @@ thumbnails.
 **Pens and ink**
 - Custom pressure-curve editor (drag points) and a calibration screen that records the lightest and
   firmest press.
-- Shape recognition (hold at stroke end, or toggle): line, rectangle, ellipse, triangle, arrow, kept as
-  ink with the pen's dynamics.
+- ~~Shape recognition~~ (done: hold at stroke end snaps to line, circle, ellipse, triangle, rectangle or square; arrows still to do).
 - Ruler: two-finger rotate, snaps ink to its edge.
 - Ink-to-text (Windows handwriting recognition, offline) on a lasso selection.
 - Ink-to-math: handwriting → LaTeX (stored as an equation object, editable as LaTeX).
@@ -114,7 +113,7 @@ thumbnails.
   [MS-ONESTORE]/[MS-ONE]), with OneNote's own PDF/DOCX exports as a fallback.
 
 **App**
-- Settings UI for every shortcut (the MVP already reads remaps from `settings.json`).
+- ~~Settings UI for every shortcut~~ (done: Settings → Shortcuts).
 - High-contrast page rendering, and Narrator support for page content (text containers, ink count, tags).
 - MSIX package with optional auto-update. The unpackaged xcopy build stays available.
 

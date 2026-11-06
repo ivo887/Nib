@@ -140,6 +140,15 @@ public sealed class NoteStore : IDisposable
     public void DeleteNotebook(long id) =>
         _db.Prepare("UPDATE notebooks SET deleted=?2 WHERE id=?1").Bind(1, id).Bind(2, Now()).Run();
 
+    public void SetNotebookColor(long id, uint color) =>
+        _db.Prepare("UPDATE notebooks SET color=?2, modified=?3 WHERE id=?1").Bind(1, id).Bind(2, (long)color).Bind(3, Now()).Run();
+
+    public void ReorderNotebooks(IReadOnlyList<long> idsInOrder) => _db.InTransaction(() =>
+    {
+        var st = _db.Prepare("UPDATE notebooks SET sort=?2 WHERE id=?1");
+        for (int i = 0; i < idsInOrder.Count; i++) { st.Bind(1, idsInOrder[i]).Bind(2, (double)(i + 1)); st.Run(); }
+    });
+
     public void ReorderNotebook(long id, double sort) =>
         _db.Prepare("UPDATE notebooks SET sort=?2 WHERE id=?1").Bind(1, id).Bind(2, sort).Run();
 
@@ -515,6 +524,12 @@ public sealed class NoteStore : IDisposable
     }
 
     public void Checkpoint() => _db.Execute("PRAGMA wal_checkpoint(PASSIVE)");
+
+    /// <summary>
+    /// Writes a consistent, compact copy of the whole database to <paramref name="path"/> (which must not exist),
+    /// safe to run while the app is writing: SQLite takes a read snapshot.
+    /// </summary>
+    public void BackupTo(string path) => _db.Execute("VACUUM INTO '" + path.Replace("'", "''") + "'");
 
     public void Dispose() => _db.Dispose();
 }

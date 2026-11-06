@@ -121,6 +121,28 @@ public static class PlacementCalculator
         return new RectI(x, y, w, h);
     }
 
+    /// <summary>How far (physical pixels) a window edge may sit from the work area and still count as "filling" it. Covers the invisible resize borders.</summary>
+    public const int FillTolerance = 16;
+
+    /// <summary>True if the window covers the work area (within <see cref="FillTolerance"/> on every side).</summary>
+    public static bool Fills(RectI window, RectI workArea) =>
+        !workArea.IsEmpty
+        && Math.Abs(window.X - workArea.X) <= FillTolerance && Math.Abs(window.Y - workArea.Y) <= FillTolerance
+        && Math.Abs(window.Right - workArea.Right) <= FillTolerance && Math.Abs(window.Bottom - workArea.Bottom) <= FillTolerance;
+
+    /// <summary>
+    /// Where a restored window should go after the work area changed (taskbar moved, resized, auto-hide toggled): if it filled the old
+    /// work area it fills the new one (keeping the same margins), otherwise it only moves enough to stay inside.
+    /// </summary>
+    public static RectI FollowWorkArea(RectI window, RectI oldWork, RectI newWork)
+    {
+        if (newWork.IsEmpty) return window;
+        if (Fills(window, oldWork))
+            return new RectI(newWork.X + (window.X - oldWork.X), newWork.Y + (window.Y - oldWork.Y),
+                             newWork.Width - (oldWork.Width - window.Width), newWork.Height - (oldWork.Height - window.Height));
+        return ClampToWorkArea(window, newWork);
+    }
+
     public static SavedPlacement ToSaved(RectI window, RectI workArea, bool maximized, bool fullScreen) =>
         new((window.X - workArea.X) / (double)workArea.Width,
             (window.Y - workArea.Y) / (double)workArea.Height,
@@ -165,6 +187,60 @@ public static class ResponsiveLayout
         bool compactToolbar = (dock is DockSide.Top or DockSide.Bottom) ? widthDips < 560 : heightDips < 560;
         double sidebar = Math.Min(SidebarWidth, Math.Max(220, widthDips * 0.3));
         return new ShellLayout(SidebarOverlays: narrow || (portrait && widthDips < 1000), CompactToolbar: compactToolbar, SidebarWidth: sidebar);
+    }
+}
+
+/// <summary>How the notebook rail (left) is shown.</summary>
+public enum RailMode : byte
+{
+    /// <summary>Icons and names.</summary>
+    Expanded = 0,
+    /// <summary>A thin strip of notebook badges.</summary>
+    Compact = 1,
+    /// <summary>Not on screen; opens as a drawer over the page on demand (very narrow windows).</summary>
+    Hidden = 2,
+}
+
+/// <summary>How the page list (right) is shown.</summary>
+public enum PagePaneMode : byte
+{
+    /// <summary>Beside the page.</summary>
+    Inline = 0,
+    /// <summary>A drawer over the page, opened on demand.</summary>
+    Overlay = 1,
+}
+
+/// <summary>What the shell shows for a given window size (all sizes in DIPs).</summary>
+public readonly record struct PaneLayout(RailMode Rail, PagePaneMode Pages, double RailWidth, double PageWidth, bool CompactToolbar, bool CompactTabs, double PageWidthLeft);
+
+/// <summary>
+/// The OneNote-style shell: a notebook rail, section tabs along the top and a page list beside the page. Wide windows
+/// show all of it; as the window narrows the page list becomes a drawer, then the rail shrinks to badges, then hides,
+/// so the page itself always keeps at least <see cref="MinPageWidth"/> DIPs.
+/// </summary>
+public static class PaneLayoutRules
+{
+    public const double ExpandedRailWidth = 220, CompactRailWidth = 56, MinPageWidth = 520;
+    public const double ExpandedAt = 1280, CompactAt = 760, PagesInlineAt = 980;
+
+    public static PaneLayout Decide(double widthDips, double heightDips, DockSide dock, bool railWantsCompact = false, bool pagesHidden = false)
+    {
+        double w = Math.Max(0, widthDips), h = Math.Max(0, heightDips);
+        bool portrait = h > w;
+
+        RailMode rail = w >= ExpandedAt ? (railWantsCompact ? RailMode.Compact : RailMode.Expanded)
+                      : w >= CompactAt ? RailMode.Compact
+                      : RailMode.Hidden;
+        double railW = rail switch { RailMode.Expanded => ExpandedRailWidth, RailMode.Compact => CompactRailWidth, _ => 0 };
+        double pageW = Math.Clamp(w * 0.2, 200, 260);
+
+        // A tall, narrow window (portrait tablet) cannot afford a second column even at 1000 DIPs.
+        bool roomForPages = w >= PagesInlineAt && !(portrait && w < 1100);
+        PagePaneMode pages = roomForPages && !pagesHidden && w - railW - pageW >= MinPageWidth ? PagePaneMode.Inline : PagePaneMode.Overlay;
+        double used = railW + (pages == PagePaneMode.Inline ? pageW : 0);
+
+        bool compactToolbar = dock is DockSide.Top or DockSide.Bottom ? w < 560 : h < 560;
+        return new PaneLayout(rail, pages, railW, pageW, compactToolbar, CompactTabs: w < 700, PageWidthLeft: w - used);
     }
 }
 

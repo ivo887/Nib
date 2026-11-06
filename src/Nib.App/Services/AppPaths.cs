@@ -11,15 +11,23 @@ namespace Nib.App.Services;
 /// <summary>Where Nib keeps its data. Local-first: everything lives in one folder (v2 sync = put it in a sync folder).</summary>
 internal static class AppPaths
 {
+    private static string? _dataFolder;
+
+    /// <summary>
+    /// The folder holding notebooks.db and settings.json: --data (development and tests), else the folder chosen in
+    /// Settings, else %LOCALAPPDATA%\Nib. Fixed for the life of the process.
+    /// </summary>
     public static string DataFolder
     {
         get
         {
+            if (_dataFolder is not null) return _dataFolder;
             string root = Environment.GetEnvironmentVariable("NIB_DATA") is { Length: > 0 } custom
                 ? custom
-                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Nib");
-            Directory.CreateDirectory(root);
-            return root;
+                : DataLocation.Configured() ?? DataLocation.DefaultFolder;
+            try { Directory.CreateDirectory(root); }
+            catch (Exception) { root = DataLocation.DefaultFolder; Directory.CreateDirectory(root); } // e.g. a drive that is gone
+            return _dataFolder = root;
         }
     }
 
@@ -29,12 +37,13 @@ internal static class AppPaths
 }
 
 /// <summary>Command-line switches (used by the performance runner and for development).</summary>
-internal sealed record LaunchOptions(bool PerfMode, string? PerfOut, string? PerfScenario, bool DebugOverlay, string? DataFolder)
+internal sealed record LaunchOptions(bool PerfMode, string? PerfOut, string? PerfScenario, bool DebugOverlay, string? DataFolder, int WaitForPid = 0)
 {
     public static LaunchOptions Parse(string[] args)
     {
         bool perf = false, overlay = false;
         string? perfOut = null, scenario = null, data = null;
+        int waitFor = 0;
         for (int i = 1; i < args.Length; i++)
         {
             switch (args[i])
@@ -44,10 +53,11 @@ internal sealed record LaunchOptions(bool PerfMode, string? PerfOut, string? Per
                 case "--perf-scenario" when i + 1 < args.Length: scenario = args[++i]; break;
                 case "--overlay": overlay = true; break;
                 case "--data" when i + 1 < args.Length: data = args[++i]; break;
+                case "--wait-for" when i + 1 < args.Length: int.TryParse(args[++i], out waitFor); break;
             }
         }
         if (data is not null) Environment.SetEnvironmentVariable("NIB_DATA", data);
-        return new LaunchOptions(perf, perfOut, scenario, overlay, data);
+        return new LaunchOptions(perf, perfOut, scenario, overlay, data, waitFor);
     }
 }
 

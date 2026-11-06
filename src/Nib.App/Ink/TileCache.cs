@@ -15,6 +15,8 @@ internal sealed class TileEntry
     public long LastUsedFrame;
     /// <summary>Content is stale and must be re-rasterized before it is shown again.</summary>
     public bool Dirty;
+    /// <summary>When <see cref="Dirty"/>: the page area that is stale (null = the whole tile). Lets an eraser sweep repaint a small patch.</summary>
+    public RectF? DirtyRect;
     /// <summary>Strokes added since rasterization, drawn on top at the next frame (cheap incremental update).</summary>
     public List<Stroke>? PendingAdds;
 }
@@ -62,8 +64,12 @@ internal sealed class TileCache : IDisposable
         if (pageRect.IsEmpty) return;
         foreach (var (key, entry) in _tiles)
         {
-            if (key.PageId != pageId || entry.Dirty) continue;
-            if (TileMath.TileRect(key.X, key.Y, TileMath.PixelsPerUnit(key.ZoomKey)).Intersects(pageRect)) entry.Dirty = true;
+            if (key.PageId != pageId || (entry.Dirty && entry.DirtyRect is null)) continue;
+            var tr = TileMath.TileRect(key.X, key.Y, TileMath.PixelsPerUnit(key.ZoomKey));
+            if (!tr.Intersects(pageRect)) continue;
+            var part = pageRect.Intersect(tr);
+            entry.DirtyRect = entry.Dirty && entry.DirtyRect is { } old ? old.Union(part) : part;
+            entry.Dirty = true;
         }
     }
 
@@ -73,10 +79,11 @@ internal sealed class TileCache : IDisposable
         var b = s.Bounds;
         foreach (var (key, entry) in _tiles)
         {
-            if (key.PageId != pageId || entry.Dirty) continue;
+            if (key.PageId != pageId || (entry.Dirty && entry.DirtyRect is null)) continue;
             if (!TileMath.TileRect(key.X, key.Y, TileMath.PixelsPerUnit(key.ZoomKey)).Intersects(b)) continue;
+            if (entry.Dirty) { entry.DirtyRect = null; continue; } // a partial patch plus a new stroke: repaint the tile fully
             (entry.PendingAdds ??= new List<Stroke>(4)).Add(s);
-            if (entry.PendingAdds.Count > 64) { entry.Dirty = true; entry.PendingAdds = null; }
+            if (entry.PendingAdds.Count > 64) { entry.Dirty = true; entry.DirtyRect = null; entry.PendingAdds = null; }
         }
     }
 

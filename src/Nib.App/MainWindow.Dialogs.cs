@@ -20,54 +20,135 @@ public sealed partial class MainWindow
     {
         var m = _toolbar.Overflow;
         m.Items.Clear();
-        Item(m, "Page setup…", "\uE7C3", () => _ = PageSetupAsync());
-        Item(m, "Insert space", "\uE75B", () => SelectTool(ToolKind.InsertSpace));
 
-        var zoom = new MenuFlyoutSubItem { Text = "Zoom", Icon = new FontIcon { Glyph = "\uE71E" } };
-        Item(zoom, "Page width", null, () => _engine?.ZoomPreset(ZoomPreset.PageWidth));
-        Item(zoom, "100%", null, () => _engine?.ZoomPreset(ZoomPreset.Actual));
-        Item(zoom, "Fit page", null, () => _engine?.ZoomPreset(ZoomPreset.FitPage));
-        m.Items.Add(zoom);
+        // Page: how the page looks and how you move around it.
+        var page = Sub(m, "Page", "");
+        Item(page, "Page setup…", "", () => _ = PageSetupAsync());
+        Item(page, "Insert space", "", () => SelectTool(ToolKind.InsertSpace));
+        _snapMenuItem = new ToggleMenuFlyoutItem { Text = "Snap to shapes and lines", IsChecked = Settings.ShapeSnap };
+        _snapMenuItem.Click += (_, _) => { SetShapeSnap(_snapMenuItem.IsChecked); BuildToolbarControls(); };
+        page.Items.Add(_snapMenuItem);
+        m.Opening += (_, _) => _snapMenuItem.IsChecked = Settings.ShapeSnap;
+        var zoom = Sub(page, "Zoom", "");
+        FillZoom(zoom);
 
-        var text = new MenuFlyoutSubItem { Text = "Paragraph style", Icon = new FontIcon { Glyph = "\uE8D2" } };
-        Item(text, "Normal", null, () => _editor?.SetParagraphKind(ParagraphKind.Normal));
-        Item(text, "Heading 1", null, () => _editor?.SetParagraphKind(ParagraphKind.Heading1));
-        Item(text, "Heading 2", null, () => _editor?.SetParagraphKind(ParagraphKind.Heading2));
-        Item(text, "Heading 3", null, () => _editor?.SetParagraphKind(ParagraphKind.Heading3));
-        Item(text, "Bulleted list", null, () => _editor?.SetParagraphKind(ParagraphKind.Bullet));
-        Item(text, "Numbered list", null, () => _editor?.SetParagraphKind(ParagraphKind.Numbered));
-        m.Items.Add(text);
-
-        var tags = new MenuFlyoutSubItem { Text = "Tag", Icon = new FontIcon { Glyph = "\uE8EC" } };
+        // Text: paragraph styles and tags.
+        var text = Sub(m, "Text and tags", "");
+        var para = Sub(text, "Paragraph style", null);
+        Item(para, "Normal", null, () => _editor?.SetParagraphKind(ParagraphKind.Normal));
+        Item(para, "Heading 1", null, () => _editor?.SetParagraphKind(ParagraphKind.Heading1));
+        Item(para, "Heading 2", null, () => _editor?.SetParagraphKind(ParagraphKind.Heading2));
+        Item(para, "Heading 3", null, () => _editor?.SetParagraphKind(ParagraphKind.Heading3));
+        Item(para, "Bulleted list", null, () => _editor?.SetParagraphKind(ParagraphKind.Bullet));
+        Item(para, "Numbered list", null, () => _editor?.SetParagraphKind(ParagraphKind.Numbered));
+        var tags = Sub(text, "Tag", "");
         foreach (var t in TagDefinition.BuiltIn)
         {
             int shortcut = t.Shortcut;
-            Item(tags, $"{t.Name}\tCtrl+{shortcut}", null, () => ApplyTagShortcut(shortcut));
+            Item(tags, $"{t.Name}	Ctrl+{shortcut}", null, () => ApplyTagShortcut(shortcut));
         }
         Item(tags, "Tag summary", null, () => _ = ShowTagSummaryAsync());
-        m.Items.Add(tags);
 
-        m.Items.Add(new MenuFlyoutSeparator());
-        var export = new MenuFlyoutSubItem { Text = "Export PDF", Icon = new FontIcon { Glyph = "\uEA90" } };
-        Item(export, "This page", null, () => _ = ExportPageAsync());
-        Item(export, "This section", null, () => { if (_section is not null) _ = SectionCommandAsync(new SectionItem(_section), "export"); });
-        Item(export, "This notebook", null, () => _ = ExportNotebookAsync());
-        export.Items.Add(new MenuFlyoutSeparator());
-        var bg = new ToggleMenuFlyoutItem { Text = "Include page background", IsChecked = _exportBackground };
-        bg.Click += (_, _) => _exportBackground = bg.IsChecked;
-        export.Items.Add(bg);
-        m.Items.Add(export);
+        // Export.
+        var export = Sub(m, "Export PDF", "");
+        FillExport(export);
 
-        m.Items.Add(new MenuFlyoutSeparator());
-        var dock = new MenuFlyoutSubItem { Text = "Toolbar position", Icon = new FontIcon { Glyph = "\uE8A0" } };
+        // View: where things sit on screen.
+        var view = Sub(m, "View", "");
+        Item(view, "Focus mode (F11)", "", ToggleFocusMode);
+        Item(view, "Notebooks sidebar", "", ToggleSidebar);
+        var dock = Sub(view, "Toolbar position", "");
         foreach (var side in new[] { DockSide.Top, DockSide.Bottom, DockSide.Left, DockSide.Right })
         {
             var s = side;
             Item(dock, s.ToString(), null, () => { ApplyDock(s); _lastEffectiveDock = (DockSide)255; ApplyResponsiveLayout(); _settings.SaveSoon(); });
         }
-        m.Items.Add(dock);
-        Item(m, "Focus mode (F11)", "\uE740", ToggleFocusMode);
-        Item(m, "Settings", "\uE713", () => _ = SettingsDialogAsync());
+        Item(view, "Customize toolbar…", "", () => _ = SettingsDialogAsync("Toolbar"));
+
+        m.Items.Add(new MenuFlyoutSeparator());
+        Item(m, "Settings…", "", () => _ = SettingsDialogAsync());
+    }
+
+    private ToggleMenuFlyoutItem _snapMenuItem = new();
+
+    private static MenuFlyoutSubItem Sub(object parent, string text, string? glyph)
+    {
+        var sub = new MenuFlyoutSubItem { Text = text };
+        if (glyph is not null) sub.Icon = new FontIcon { Glyph = glyph };
+        if (parent is MenuFlyout f) f.Items.Add(sub);
+        else if (parent is MenuFlyoutSubItem s) s.Items.Add(sub);
+        return sub;
+    }
+
+    private void FillZoom(object parent)
+    {
+        Item(parent, "Page width", null, () => _engine?.ZoomPreset(ZoomPreset.PageWidth));
+        Item(parent, "100%", null, () => _engine?.ZoomPreset(ZoomPreset.Actual));
+        Item(parent, "Fit page", null, () => _engine?.ZoomPreset(ZoomPreset.FitPage));
+        Item(parent, "Zoom in", null, () => _engine?.ZoomBy(1.25f));
+        Item(parent, "Zoom out", null, () => _engine?.ZoomBy(0.8f));
+    }
+
+    private void FillExport(object parent)
+    {
+        Item(parent, "This page", null, () => _ = ExportPageAsync());
+        Item(parent, "This section", null, () => { if (_section is not null) _ = SectionCommandAsync(new SectionItem(_section), "export"); });
+        Item(parent, "This notebook", null, () => _ = ExportNotebookAsync());
+
+        void Add(MenuFlyoutItemBase item)
+        {
+            if (parent is MenuFlyout f) f.Items.Add(item);
+            else if (parent is MenuFlyoutSubItem sub) sub.Items.Add(item);
+        }
+        Add(new MenuFlyoutSeparator());
+
+        // The format used by the three commands above (also in Settings → Saving).
+        var format = new MenuFlyoutSubItem { Text = "Format" };
+        foreach (var (fmt, label) in new[] { (ExportFormat.Pdf, "PDF document"), (ExportFormat.Png, "PNG image"), (ExportFormat.Svg, "SVG drawing") })
+        {
+            var f = fmt;
+            var radio = new RadioMenuFlyoutItem { Text = label, GroupName = "NibExportFormat", IsChecked = Settings.ExportFormat == f };
+            radio.Click += (_, _) => { Settings.ExportFormat = f; _settings.SaveSoon(); };
+            format.Items.Add(radio);
+        }
+        Add(format);
+
+        var bg = new ToggleMenuFlyoutItem { Text = "Include page background", IsChecked = Settings.ExportBackground };
+        bg.Click += (_, _) => { Settings.ExportBackground = bg.IsChecked; _settings.SaveSoon(); };
+        Add(bg);
+        Add(new MenuFlyoutSeparator());
+
+        var backup = new MenuFlyoutItem { Text = "Back up all notebooks…", Icon = new FontIcon { Glyph = "\uE74E" } };
+        backup.Click += (_, _) => _ = BackUpAsync();
+        Add(backup);
+    }
+
+    /// <summary>Handles the toolbar's command buttons (the ones that are not drawing tools).</summary>
+    private void OnToolbarCommand(string id, FrameworkElement anchor)
+    {
+        switch (id)
+        {
+            case "zoom":
+            {
+                var f = new MenuFlyout();
+                FillZoom(f);
+                f.ShowAt(anchor);
+                break;
+            }
+            case "export":
+            {
+                var f = new MenuFlyout();
+                FillExport(f);
+                f.ShowAt(anchor);
+                break;
+            }
+            case "page-setup": _ = PageSetupAsync(); break;
+            case "focus": ToggleFocusMode(); break;
+            case "sidebar": ToggleSidebar(); break;
+            case "settings": _ = SettingsDialogAsync(); break;
+            case "nav": ShowNavigator(anchor); break;
+            case "exit-focus": ToggleFocusMode(); break;
+        }
     }
 
     private static void Item(object parent, string text, string? glyph, Action a)
@@ -81,24 +162,41 @@ public sealed partial class MainWindow
 
     // ---------------------------------------------------------------- export
 
-    /// <summary>Lined/grid/dot patterns in exported PDFs; off gives plain white sheets.</summary>
-    private bool _exportBackground = true;
 
     private async Task ExportPageAsync()
     {
         if (_export is null || _engine is null) return;
-        var path = await _export.ExportPage(_engine, _exportBackground);
-        if (path is not null) ShowToast("Exported " + System.IO.Path.GetFileName(path));
+        await RunExportAsync(() => _export.ExportPage(_engine));
     }
 
     private async Task ExportNotebookAsync()
     {
         if (_export is null || _engine is null || _notebook is null) return;
-        var path = await _export.ExportNotebook(_engine, _notebook, _exportBackground);
-        if (path is not null) ShowToast("Exported " + System.IO.Path.GetFileName(path));
+        await RunExportAsync(() => _export.ExportNotebook(_engine, _notebook));
     }
 
-    // ---------------------------------------------------------------- page setup
+    private async Task BackUpAsync()
+    {
+        if (_export is null || _engine is null) return;
+        await RunExportAsync(() => _export.BackUpAll(_engine));
+    }
+
+    /// <summary>Runs an export, then tells the user what was written (or what went wrong).</summary>
+    internal async Task RunExportAsync(Func<Task<string?>> export)
+    {
+        try
+        {
+            ShowToast("Exporting…");
+            var path = await export();
+            if (path is null) { Toast.Visibility = Visibility.Collapsed; return; }
+            ShowToast("Saved " + System.IO.Path.GetFileName(path.TrimEnd('\\', '/')));
+        }
+        catch (Exception e)
+        {
+            Services.CrashLog.Write(e);
+            ShowToast("Could not save: " + e.Message);
+        }
+    }
 
     private async Task PageSetupAsync()
     {
@@ -201,7 +299,7 @@ public sealed partial class MainWindow
             PrimaryButtonText = "Apply",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
-            XamlRoot = Root.XamlRoot,
+            XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme,
         };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return null;
 
@@ -228,98 +326,6 @@ public sealed partial class MainWindow
             Landscape = landscape.IsOn,
         };
         return (layout, scope?.SelectedIndex ?? 0);
-    }
-
-    // ---------------------------------------------------------------- settings
-
-    private async Task SettingsDialogAsync()
-    {
-        var s = Settings;
-        var panel = new StackPanel { Spacing = 10, MinWidth = 380 };
-
-        panel.Children.Add(Header("Pen & touch"));
-        var touchDraws = new ToggleSwitch { Header = "Draw with finger", IsOn = s.TouchDraws, OffContent = "Off: one finger scrolls", OnContent = "On: two fingers scroll" };
-        panel.Children.Add(touchDraws);
-        var barrel = new ComboBox { Header = "Pen barrel button", HorizontalAlignment = HorizontalAlignment.Stretch };
-        barrel.Items.Add("Eraser"); barrel.Items.Add("Lasso select"); barrel.Items.Add("Right-click"); barrel.Items.Add("Nothing");
-        barrel.SelectedIndex = (int)s.BarrelButton;
-        panel.Children.Add(barrel);
-        var autoPrediction = new ToggleSwitch
-        {
-            Header = "Stroke prediction",
-            IsOn = s.AutoPrediction,
-            OnContent = $"Automatic from the refresh rate ({DeviceTuner.AutoPredictionMs(_device.RefreshHz):0} ms at {_device.RefreshHz:0} Hz)",
-            OffContent = "Fixed",
-        };
-        panel.Children.Add(autoPrediction);
-        var prediction = new Slider { Header = "Fixed prediction (ms, 0 = off)", Minimum = 0, Maximum = 30, StepFrequency = 1, Value = s.PredictionMs, IsEnabled = !s.AutoPrediction };
-        autoPrediction.Toggled += (_, _) => prediction.IsEnabled = !autoPrediction.IsOn;
-        panel.Children.Add(prediction);
-        var perfMode = new ToggleSwitch
-        {
-            Header = "Performance while writing",
-            IsOn = s.PerformanceModeWhileWriting,
-            OnContent = "On: high refresh rate and performance cores while the pen is near",
-            OffContent = "Off: let Windows decide",
-        };
-        panel.Children.Add(perfMode);
-
-        panel.Children.Add(Header("Layout"));
-        var dock = new ComboBox { Header = "Toolbar position (left/right keeps tools away from your writing hand)", HorizontalAlignment = HorizontalAlignment.Stretch };
-        foreach (var d in new[] { "Top", "Bottom", "Left", "Right" }) dock.Items.Add(d);
-        dock.SelectedIndex = (int)s.ToolbarDock;
-        panel.Children.Add(dock);
-        var sidebarRight = new ToggleSwitch { Header = "Notebooks on the right", IsOn = s.SidebarOnRight };
-        panel.Children.Add(sidebarRight);
-
-        panel.Children.Add(Header("Appearance"));
-        var theme = new ComboBox { Header = "Theme", HorizontalAlignment = HorizontalAlignment.Stretch };
-        theme.Items.Add("Use system setting"); theme.Items.Add("Light"); theme.Items.Add("Dark");
-        theme.SelectedIndex = (int)s.Theme;
-        panel.Children.Add(theme);
-        var invert = new ToggleSwitch { Header = "Dark pages in dark theme (exports keep real colors)", IsOn = s.InvertPagesInDarkTheme };
-        panel.Children.Add(invert);
-        var oled = new ToggleSwitch { Header = "Pure black dark pages (best on OLED screens: black pixels switch off)", IsOn = s.OledBlackPages };
-        panel.Children.Add(oled);
-
-        panel.Children.Add(Header("This device"));
-        panel.Children.Add(new TextBlock
-        {
-            Text = string.Join("\n", DeviceTuner.Describe(_device, s)),
-            TextWrapping = TextWrapping.Wrap,
-            Opacity = 0.8,
-            IsTextSelectionEnabled = true,
-        });
-
-        panel.Children.Add(Header("About"));
-        panel.Children.Add(new TextBlock { Text = $"Nib 0.1 (MVP) · data: {Services.AppPaths.DataFolder}", TextWrapping = TextWrapping.Wrap, Opacity = 0.7, IsTextSelectionEnabled = true });
-
-        var dialog = new ContentDialog
-        {
-            Title = "Settings",
-            Content = new ScrollViewer { Content = panel, MaxHeight = 600 },
-            PrimaryButtonText = "Save",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary,
-            XamlRoot = Root.XamlRoot,
-        };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-
-        s.TouchDraws = touchDraws.IsOn;
-        s.BarrelButton = (BarrelButtonAction)Math.Max(0, barrel.SelectedIndex);
-        s.PredictionMs = (float)prediction.Value;
-        s.AutoPrediction = autoPrediction.IsOn;
-        s.PerformanceModeWhileWriting = perfMode.IsOn;
-        s.OledBlackPages = oled.IsOn;
-        s.SidebarOnRight = sidebarRight.IsOn;
-        s.Theme = (ThemeMode)Math.Max(0, theme.SelectedIndex);
-        s.InvertPagesInDarkTheme = invert.IsOn;
-        ApplyDock((DockSide)Math.Max(0, dock.SelectedIndex));
-        _lastEffectiveDock = (DockSide)255;
-        ApplyTheme();
-        ApplyResponsiveLayout();
-        ApplyDeviceTuning(); // also pushes the tool state
-        _settings.SaveSoon();
     }
 
     private static TextBlock Header(string text) => new()

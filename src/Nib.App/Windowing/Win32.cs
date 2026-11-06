@@ -6,6 +6,7 @@ namespace Nib.App.Windowing;
 internal static unsafe class Win32
 {
     public const uint WM_SETTINGCHANGE = 0x001A;
+    public const uint WM_GETMINMAXINFO = 0x0024;
     public const uint WM_DISPLAYCHANGE = 0x007E;
     public const uint WM_DPICHANGED = 0x02E0;
     public const int SPI_SETWORKAREA = 0x002F;
@@ -48,6 +49,10 @@ internal static unsafe class Win32
     [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfoW(IntPtr monitor, ref MONITORINFOEX info);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
+
+    /// <summary>MINMAXINFO from WM_GETMINMAXINFO: the sizes Windows allows the window to take.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MINMAXINFO { public POINT ptReserved, ptMaxSize, ptMaxPosition, ptMinTrackSize, ptMaxTrackSize; }
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
 

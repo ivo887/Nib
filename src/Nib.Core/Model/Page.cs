@@ -106,10 +106,77 @@ public sealed class Page
 
     // ---- Mutations: used by commands so every change is undoable and observed. ----
 
+    // ---- Batched edits: many small replacements (an eraser sweep) reported to observers as one change. ----
+
+    private bool _batching;
+    private readonly List<Stroke> _batchRemoved = new();
+    private readonly List<Stroke> _batchAdded = new();
+
+    /// <summary>
+    /// Region (page units) that really changed for the change being reported to observers; renderers repaint only
+    /// that area instead of everything under the old strokes' bounds. Null means "unknown": repaint it all.
+    /// </summary>
+    public RectF? DirtyHint { get; private set; }
+
+    /// <summary>Starts collecting stroke replacements; observers hear nothing until <see cref="EndBatch"/>.</summary>
+    public void BeginBatch()
+    {
+        _batching = true;
+        _batchRemoved.Clear();
+        _batchAdded.Clear();
+    }
+
+    /// <summary>
+    /// Ends the batch and tells observers once about the net result (strokes that were created and replaced again
+    /// inside the batch cancel out). Returns the net change so the caller can record one undo step.
+    /// </summary>
+    public (Stroke[] Removed, Stroke[] Added) EndBatch(RectF? dirty)
+    {
+        _batching = false;
+        var removed = _batchRemoved.ToArray();
+        var added = _batchAdded.ToArray();
+        _batchRemoved.Clear();
+        _batchAdded.Clear();
+        if (removed.Length == 0 && added.Length == 0) return (removed, added);
+        Version++;
+        DirtyHint = dirty;
+        for (int i = 0; i < _observers.Count; i++) _observers[i].OnStrokesChanged(this, removed, added);
+        DirtyHint = null;
+        float bottom = float.NegativeInfinity;
+        for (int i = 0; i < added.Length; i++) if (added[i].Bounds.Bottom > bottom) bottom = added[i].Bounds.Bottom;
+        if (added.Length > 0) GrowSheetsFor(bottom);
+        return (removed, added);
+    }
+
     internal void ReplaceStrokes(IReadOnlyList<Stroke>? removed, IReadOnlyList<Stroke>? added)
     {
         removed ??= NoStrokes;
         added ??= NoStrokes;
+        if (_batching)
+        {
+            // Net bookkeeping: removing something added earlier in this batch just cancels it.
+            for (int i = 0; i < removed.Count; i++)
+            {
+                int k = _batchAdded.FindIndex(a => a.Id == removed[i].Id);
+                if (k >= 0) _batchAdded.RemoveAt(k); else _batchRemoved.Add(removed[i]);
+            }
+            for (int i = 0; i < added.Count; i++) _batchAdded.Add(added[i]);
+            ApplyStrokeChanges(removed, added);
+            return;
+        }
+        ApplyStrokeChanges(removed, added);
+        Version++;
+        for (int i = 0; i < _observers.Count; i++) _observers[i].OnStrokesChanged(this, removed, added);
+        if (added.Count > 0)
+        {
+            float bottom = float.NegativeInfinity;
+            for (int i = 0; i < added.Count; i++) if (added[i].Bounds.Bottom > bottom) bottom = added[i].Bounds.Bottom;
+            GrowSheetsFor(bottom);
+        }
+    }
+
+    private void ApplyStrokeChanges(IReadOnlyList<Stroke> removed, IReadOnlyList<Stroke> added)
+    {
         for (int i = 0; i < removed.Count; i++)
         {
             var s = removed[i];
@@ -119,7 +186,6 @@ public sealed class Page
             int idx = IndexOfZ(_strokes, current.Z, current);
             if (idx >= 0) _strokes.RemoveAt(idx);
         }
-        float bottom = float.NegativeInfinity;
         for (int i = 0; i < added.Count; i++)
         {
             var s = added[i];
@@ -134,11 +200,7 @@ public sealed class Page
             _strokes.Insert(InsertionIndex(_strokes, s.Z), s);
             StrokeIndex.Insert(s);
             if (s.Z > _maxZ) _maxZ = s.Z;
-            if (s.Bounds.Bottom > bottom) bottom = s.Bounds.Bottom;
         }
-        Version++;
-        for (int i = 0; i < _observers.Count; i++) _observers[i].OnStrokesChanged(this, removed, added);
-        if (added.Count > 0) GrowSheetsFor(bottom);
     }
 
     internal void PutText(TextContainer t)

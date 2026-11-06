@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Numerics;
 using Microsoft.UI.Input;
 using Nib.Core.Diagnostics;
@@ -187,11 +188,13 @@ internal sealed partial class InkEngine
         {
             case Mode.Ink:
                 ProcessSamples(args);
-                UpdatePrediction(pt);
+                if (_snapped) _renderer.Predicted.Clear(); else UpdatePrediction(pt);
+                if (Tool.ShapeSnap) TrackHold(pagePt);
+                if (Tool.Pointer?.ShowWhileDrawing == true) UpdateHover(pt, screen);
                 MarkInput();
                 break;
             case Mode.Erase:
-                EraseTo(pagePt);
+                QueueErase(pagePt);
                 MarkInput();
                 break;
             case Mode.Lasso:
@@ -255,7 +258,8 @@ internal sealed partial class InkEngine
                 MarkInput();
                 break;
             case Mode.Erase:
-                EraseTo(pagePt);
+                QueueErase(pagePt);
+                FlushErase();
                 _page.Undo.EndGroup();
                 break;
             case Mode.Lasso:
@@ -283,6 +287,7 @@ internal sealed partial class InkEngine
 
     private void OnPointerEntered(InputPointerSource sender, PointerEventArgs args)
     {
+        if (args.CurrentPoint.PointerDeviceType != PointerDeviceType.Touch) _host.Post(_ui, h => h.OnPageHoverChanged(true));
         if (args.CurrentPoint.PointerDeviceType == PointerDeviceType.Pen)
         {
             _palm.PenSeen(NowMs);
@@ -295,6 +300,7 @@ internal sealed partial class InkEngine
     private void OnPointerExited(InputPointerSource sender, PointerEventArgs args)
     {
         var pt = args.CurrentPoint;
+        if (pt.PointerDeviceType != PointerDeviceType.Touch) _host.Post(_ui, h => h.OnPageHoverChanged(false));
         if (pt.PointerDeviceType == PointerDeviceType.Pen && !pt.IsInContact)
         {
             _palm.PenLeft(NowMs);
@@ -406,19 +412,31 @@ internal sealed partial class InkEngine
     {
         if (kind != ToolKind.Lasso) ClearSelection();
         if (_renderer is not null) _renderer.Hover = null;
-        if (_input is not null)
-            _input.Cursor = InputSystemCursor.Create(kind == ToolKind.Text ? InputSystemCursorShape.IBeam : InputSystemCursorShape.Cross);
+        ApplyCursorShape(Tool);
         RequestRender();
     }
 
+    /// <summary>The Windows cursor shape over the page (when it is visible at all: see MainWindow.UpdateSystemCursor).</summary>
+    private void ApplyCursorShape(ToolState tool)
+    {
+        if (_input is null) return;
+        var shape = tool.Kind == ToolKind.Text ? InputSystemCursorShape.IBeam
+            : (tool.Pointer?.SystemCursor ?? SystemCursorMode.Auto) == SystemCursorMode.Arrow ? InputSystemCursorShape.Arrow
+            : InputSystemCursorShape.Cross;
+        _input.Cursor = InputSystemCursor.Create(shape);
+    }
+
     // ---- ink ----
+
+    private static readonly TiltSettings DefaultTilt = new();
 
     private RawSample ToRaw(PointerPoint p)
     {
         var page = _view.State.ToPage((float)p.Position.X, (float)p.Position.Y);
         var pr = p.Properties;
         bool pen = p.PointerDeviceType == PointerDeviceType.Pen;
-        return new RawSample(page.X, page.Y, pen ? pr.Pressure : 0.5f, pen ? pr.XTilt : 0, pen ? pr.YTilt : 0, pen ? pr.Twist : -1, p.Timestamp);
+        var (tx, ty) = pen ? (Tool.Tilt ?? DefaultTilt).Apply(pr.XTilt, pr.YTilt) : (0f, 0f);
+        return new RawSample(page.X, page.Y, pen ? pr.Pressure : 0.5f, tx, ty, pen ? pr.Twist : -1, p.Timestamp);
     }
 
     private void BeginInk(ToolKind kind, PointerPoint pt, Vector2 pagePt, bool isPen)
@@ -437,6 +455,15 @@ internal sealed partial class InkEngine
         _wet.Flags = _processor.Flags;
         _renderer!.BeginWet(_wet);
         _mode = Mode.Ink;
+        // Pointer shows only while hovering unless the user wants it while drawing too.
+        if (tool.Pointer?.ShowWhileDrawing != true) _renderer.Hover = null;
+        _snapped = false; _snapFailed = false;
+        if (tool.ShapeSnap)
+        {
+            _holdAnchor = pagePt;
+            _lastMoveTicks = Stopwatch.GetTimestamp();
+            _holdTimer?.Start();
+        }
     }
 
     /// <summary>Feeds every hardware sample since the last event (coalesced points included), oldest first.</summary>
@@ -478,8 +505,87 @@ internal sealed partial class InkEngine
         foreach (var p in list) predicted.Add(_view.State.ToPage((float)p.Position.X, (float)p.Position.Y));
     }
 
+    // ---- shape snapping: hold the pen still at the end of a stroke ----
+
+    private long _lastMoveTicks;
+    private Vector2 _holdAnchor, _snapStart, _snapEnd;
+    private bool _snapped, _snapFailed;
+    private ShapeKind _snapKind;
+
+    /// <summary>Called on every move while inking: restarts the hold clock when the pen really moved, or drags a snapped line's end.</summary>
+    private void TrackHold(Vector2 pagePt)
+    {
+        if (_snapped)
+        {
+            if (_snapKind == ShapeKind.Line) FollowSnappedLine(pagePt);
+            return;
+        }
+        if (Vector2.Distance(pagePt, _holdAnchor) * _view.State.Zoom > 3f)
+        {
+            _holdAnchor = pagePt;
+            _lastMoveTicks = Stopwatch.GetTimestamp();
+            _snapFailed = false;
+        }
+    }
+
+    private void OnHoldTick()
+    {
+        if (_mode != Mode.Ink || !_processor.IsActive) { _holdTimer?.Stop(); return; }
+        if (_snapped || _snapFailed) return;
+        var tool = Tool;
+        if (!tool.ShapeSnap) return;
+        double restedMs = (Stopwatch.GetTimestamp() - _lastMoveTicks) * 1000.0 / Stopwatch.Frequency;
+        if (restedMs < Math.Clamp(tool.ShapeHoldMs, 250, 2500)) return;
+        TrySnap(tool);
+    }
+
+    private void TrySnap(ToolState tool)
+    {
+        var shape = ShapeRecognizer.Recognize(_processor.PointSpan, tool.SnapLineAngles);
+        if (!shape.IsShape) { _snapFailed = true; return; }
+        var ink = ShapeRecognizer.ToInkPoints(shape, _processor.PointSpan);
+        _processor.ReplacePoints(ink);
+        _snapped = true;
+        _snapKind = shape.Kind;
+        _snapStart = shape.Vertices[0];
+        _snapEnd = shape.Vertices[^1];
+        RedrawWetStroke();
+        string name = shape.Kind switch
+        {
+            ShapeKind.Line => "Line",
+            ShapeKind.Circle => "Circle",
+            ShapeKind.Ellipse => "Ellipse",
+            ShapeKind.Triangle => "Triangle",
+            ShapeKind.Square => "Square",
+            ShapeKind.Rectangle => "Rectangle",
+            _ => "Shape",
+        };
+        _host.Post(_ui, h => h.OnStatus(name));
+    }
+
+    /// <summary>A snapped line keeps following the pen (with angle snapping) until it lifts, so its length can still be adjusted.</summary>
+    private void FollowSnappedLine(Vector2 pagePt)
+    {
+        var end = ShapeRecognizer.SnapEndpoint(_snapStart, pagePt, Tool.SnapLineAngles);
+        if (Vector2.DistanceSquared(end, _snapEnd) < 0.25f) return;
+        _snapEnd = end;
+        var line = new ShapeResult(ShapeKind.Line, new[] { _snapStart, end }, false);
+        _processor.ReplacePoints(ShapeRecognizer.ToInkPoints(line, _processor.PointSpan));
+        RedrawWetStroke();
+    }
+
+    /// <summary>The wet layer draws incrementally; after the points were replaced it has to start over.</summary>
+    private void RedrawWetStroke()
+    {
+        _renderer!.Predicted.Clear();
+        _renderer.BeginWet(_wet);
+        RequestRender();
+    }
+
     private void CommitInk()
     {
+        _holdTimer?.Stop();
+        _snapped = false;
         if (_page is null || _renderer is null || !_processor.IsActive) return;
         var pts = _processor.End();
         var stroke = new Stroke(IdGenerator.Next(), _page.NextZ(), _wet.Kind, _wet.Color, _wet.Width, _wet.Dynamics, _processor.Flags, pts);
@@ -500,36 +606,70 @@ internal sealed partial class InkEngine
         _page!.Undo.BeginGroup("Erase");
         _renderer!.HoverEraser = true;
         _renderer.EraserRadiusDips = Tool.EraserSizeDips * 0.5f;
-        EraseTo(pagePt);
+        _eraseQueue.Clear();
+        QueueErase(pagePt);
     }
 
-    private void EraseTo(Vector2 pagePt)
+    // ---- erasing: positions are queued as they arrive and applied once per frame ----
+    //
+    // A pen reports 133-240 times a second. Cutting and repainting for every report made the pixel eraser stutter on
+    // slower tablets, so each report only queues a position; the frame applies the whole sweep as ONE edit (one
+    // observer notification, one undo step) and repaints only the area the eraser passed over. Every queued position
+    // is still swept in order, so fast strokes cannot skip over ink.
+
+    private readonly List<Vector2> _eraseQueue = new(32);
+
+    private void QueueErase(Vector2 pagePt)
     {
-        var page = _page!;
-        _touched.Clear();
-        _eraser.FindTouched(page, _lastEraserPage.X, _lastEraserPage.Y, pagePt.X, pagePt.Y, _eraserRadiusPage, _touched);
-        if (_touched.Count > 0)
-        {
-            if (_eraserMode == EraserMode.Stroke)
-            {
-                page.Execute(new StrokesCommand("Erase", _touched.ToArray(), null));
-            }
-            else
-            {
-                _removed.Clear();
-                _added.Clear();
-                foreach (var s in _touched)
-                {
-                    var pieces = _eraser.Cut(s, _lastEraserPage.X, _lastEraserPage.Y, pagePt.X, pagePt.Y, _eraserRadiusPage);
-                    if (pieces is null) continue;
-                    _removed.Add(s);
-                    _added.AddRange(pieces);
-                }
-                if (_removed.Count > 0) page.Execute(new StrokesCommand("Erase", _removed.ToArray(), _added.ToArray()));
-            }
-        }
-        _lastEraserPage = pagePt;
+        _eraseQueue.Add(pagePt);
         _renderer!.Hover = pagePt;
+        RequestRender();
+    }
+
+    private void FlushErase()
+    {
+        if (_eraseQueue.Count == 0 || _page is null) return;
+        var page = _page;
+        page.BeginBatch();
+        RectF dirty = RectF.Empty;
+        bool any = false;
+        for (int q = 0; q < _eraseQueue.Count; q++)
+        {
+            var pagePt = _eraseQueue[q];
+            _touched.Clear();
+            _eraser.FindTouched(page, _lastEraserPage.X, _lastEraserPage.Y, pagePt.X, pagePt.Y, _eraserRadiusPage, _touched);
+            if (_touched.Count > 0)
+            {
+                float extent = 0f;
+                for (int i = 0; i < _touched.Count; i++) extent = MathF.Max(extent, NibModel.MaxExtent(_touched[i].Kind, _touched[i].Width));
+                var swept = new RectF(MathF.Min(_lastEraserPage.X, pagePt.X), MathF.Min(_lastEraserPage.Y, pagePt.Y),
+                    MathF.Max(_lastEraserPage.X, pagePt.X), MathF.Max(_lastEraserPage.Y, pagePt.Y)).Inflate(_eraserRadiusPage + extent + 2f);
+                dirty = any ? dirty.Union(swept) : swept;
+                any = true;
+
+                if (_eraserMode == EraserMode.Stroke)
+                {
+                    new StrokesCommand("Erase", _touched.ToArray(), null).Do(page);
+                }
+                else
+                {
+                    _removed.Clear();
+                    _added.Clear();
+                    foreach (var s in _touched)
+                    {
+                        var pieces = _eraser.Cut(s, _lastEraserPage.X, _lastEraserPage.Y, pagePt.X, pagePt.Y, _eraserRadiusPage);
+                        if (pieces is null) continue;
+                        _removed.Add(s);
+                        _added.AddRange(pieces);
+                    }
+                    if (_removed.Count > 0) new StrokesCommand("Erase", _removed.ToArray(), _added.ToArray()).Do(page);
+                }
+            }
+            _lastEraserPage = pagePt;
+        }
+        _eraseQueue.Clear();
+        var (removed, added) = page.EndBatch(any ? dirty : null);
+        if (removed.Length > 0 || added.Length > 0) page.Undo.Push(new StrokesCommand("Erase", removed, added));
     }
 
     // ---- lasso and selection ----
@@ -778,8 +918,9 @@ internal sealed partial class InkEngine
         {
             var preset = tool.Kind == ToolKind.Highlighter ? tool.Highlighter : tool.Pen;
             bool pen = pt.PointerDeviceType == PointerDeviceType.Pen;
-            var flags = StrokeFlags.HasPressure | (pen && (pr.XTilt != 0 || pr.YTilt != 0) ? StrokeFlags.HasTilt : 0);
-            var p = new InkPoint(pagePt.X, pagePt.Y, 0.6f, pen ? pr.XTilt : 0, pen ? pr.YTilt : 0, pen ? pr.Twist : -1);
+            var (hx, hy) = pen ? (tool.Tilt ?? DefaultTilt).Apply(pr.XTilt, pr.YTilt) : (0f, 0f);
+            var flags = StrokeFlags.HasPressure | (pen && (hx != 0 || hy != 0) ? StrokeFlags.HasTilt : 0);
+            var p = new InkPoint(pagePt.X, pagePt.Y, 0.6f, hx, hy, pen ? pr.Twist : -1);
             NibModel.Compute(preset.Kind, preset.Width, preset.Dynamics, flags, p, 0, out var f);
             _renderer!.Hover = pagePt;
             _renderer.HoverEraser = false;
@@ -818,8 +959,9 @@ internal sealed partial class InkEngine
     public void OnMultiFingerTap(int fingers)
     {
         if (_page is null) return;
-        if (fingers == 2 && _page.UndoLast()) _host.Post(_ui, h => h.OnStatus("Undo"));
-        else if (fingers == 3 && _page.RedoLast()) _host.Post(_ui, h => h.OnStatus("Redo"));
+        var t = Tool;
+        if (fingers == 2 && t.TwoFingerUndo && _page.UndoLast()) _host.Post(_ui, h => h.OnStatus("Undo"));
+        else if (fingers == 3 && t.ThreeFingerRedo && _page.RedoLast()) _host.Post(_ui, h => h.OnStatus("Redo"));
         ClearSelection();
         RequestRender();
     }
@@ -829,10 +971,13 @@ internal sealed partial class InkEngine
         switch (_mode)
         {
             case Mode.Ink:
+                _holdTimer?.Stop();
+                _snapped = false;
                 _processor.Cancel();
                 _renderer?.EndWet();
                 break;
             case Mode.Erase:
+                FlushErase();
                 _page?.Undo.EndGroup();
                 break;
             case Mode.Lasso:

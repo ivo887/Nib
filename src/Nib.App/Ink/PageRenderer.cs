@@ -77,6 +77,8 @@ internal sealed class PageRenderer : IPageObserver, IDisposable
     public Matrix3x2 SelectionTransform = Matrix3x2.Identity;
     public IReadOnlyList<Stroke>? SelectionStrokes;
     public Vector2? Hover;
+    /// <summary>User-chosen pointer look. Written and read on the ink thread.</summary>
+    public PointerSettings Pointer = new();
     public Footprint HoverFootprint;
     public bool HoverEraser;
     public float EraserRadiusDips = 7;
@@ -195,6 +197,12 @@ internal sealed class PageRenderer : IPageObserver, IDisposable
             foreach (var s in added) _tiles.AppendStroke(page.Id, s);
             return;
         }
+        if (page.DirtyHint is { } hint)
+        {
+            // An eraser sweep changed only the area around the eraser; the rest of the old strokes looks the same.
+            _tiles.Invalidate(page.Id, hint);
+            return;
+        }
         for (int i = 0; i < removed.Count; i++) _tiles.Invalidate(page.Id, removed[i].Bounds);
         for (int i = 0; i < added.Count; i++) _tiles.Invalidate(page.Id, added[i].Bounds);
     }
@@ -293,6 +301,18 @@ internal sealed class PageRenderer : IPageObserver, IDisposable
         float ppu = TileMath.PixelsPerUnit(key.ZoomKey);
         var rect = TileMath.TileRect(key.X, key.Y, ppu);
         using var ds = entry.Target.CreateDrawingSession();
+        // A patch (an eraser sweep) repaints only its own pixels: clip to them and look up only what touches them.
+        RectF? patch = entry.Dirty ? entry.DirtyRect : null;
+        Microsoft.Graphics.Canvas.CanvasActiveLayer? clip = null;
+        if (patch is { } pr)
+        {
+            float ox = key.X * (float)TileMath.TileSize, oy = key.Y * (float)TileMath.TileSize;
+            float x0 = MathF.Max(0, MathF.Floor(pr.Left * ppu - ox) - 1), y0 = MathF.Max(0, MathF.Floor(pr.Top * ppu - oy) - 1);
+            float x1 = MathF.Min(TileMath.TileSize, MathF.Ceiling(pr.Right * ppu - ox) + 1), y1 = MathF.Min(TileMath.TileSize, MathF.Ceiling(pr.Bottom * ppu - oy) + 1);
+            if (x1 <= x0 || y1 <= y0) { entry.Dirty = false; entry.DirtyRect = null; return; }
+            clip = ds.CreateLayer(1f, new Windows.Foundation.Rect(x0, y0, x1 - x0, y1 - y0));
+            rect = RectF.FromXYWH((x0 + ox) / ppu, (y0 + oy) / ppu, (x1 - x0) / ppu, (y1 - y0) / ppu);
+        }
         ds.Clear(DeskColor);
         ds.Transform = Matrix3x2.CreateScale(ppu) * Matrix3x2.CreateTranslation(-key.X * TileMath.TileSize, -key.Y * TileMath.TileSize);
 
@@ -323,7 +343,7 @@ internal sealed class PageRenderer : IPageObserver, IDisposable
         page.StrokeIndex.Query(rect, _query);
         _query.Sort(ByZ);
         foreach (var s in _query)
-            if (s.Kind == PenKind.Highlighter && !_hidden.Contains(s.Id)) DrawStroke(ds, s);
+            if (s.Kind.IsBackgroundInk() && !_hidden.Contains(s.Id)) DrawStroke(ds, s);
 
         _textQuery.Clear();
         page.TextIndex.Query(rect.Inflate(TextContainer.TagGutter), _textQuery);
@@ -337,9 +357,11 @@ internal sealed class PageRenderer : IPageObserver, IDisposable
         }
 
         foreach (var s in _query)
-            if (s.Kind != PenKind.Highlighter && !_hidden.Contains(s.Id)) DrawStroke(ds, s);
+            if (!s.Kind.IsBackgroundInk() && !_hidden.Contains(s.Id)) DrawStroke(ds, s);
 
+        clip?.Dispose();
         entry.Dirty = false;
+        entry.DirtyRect = null;
         entry.PendingAdds = null;
     }
 
@@ -594,19 +616,53 @@ internal sealed class PageRenderer : IPageObserver, IDisposable
             {
                 ds.DrawCircle(c, EraserRadiusDips, Colors2D.From(0xFF707070), 1f);
             }
-            else
-            {
-                // Pen-shaped hover cursor: the nib footprint at the current tilt, sized to the zoom.
-                var f = HoverFootprint;
-                var col = Colors2D.From(Map(HoverColor));
-                float rx = MathF.Max(f.Rx * view.Zoom, 1.5f), ry = MathF.Max(f.Ry * view.Zoom, 1.5f);
-                var old = ds.Transform;
-                ds.Transform = Matrix3x2.CreateRotation(f.Angle) * Matrix3x2.CreateTranslation(c);
-                if (f.Shape == FootprintShape.Rect) ds.DrawRectangle(-rx, -ry, 2 * rx, 2 * ry, col, 1f);
-                else ds.DrawEllipse(0, 0, rx, ry, col, 1f);
-                ds.Transform = old;
-            }
+            else DrawPointer(ds, c, view.Zoom);
         }
+    }
+
+    /// <summary>The hover pointer, styled by the user's pointer settings (style, size, color, opacity).</summary>
+    private void DrawPointer(CanvasDrawingSession ds, Vector2 c, float zoom)
+    {
+        var ps = Pointer;
+        if (ps.Style == PointerStyle.None) return;
+        var col = Colors2D.From(ps.ColorMode == PointerColorMode.Custom ? ps.CustomColor : Map(HoverColor));
+        col.A = (byte)Math.Clamp(col.A * ps.Opacity, 0f, 255f);
+        float lw = ps.LineWidth;
+        var f = HoverFootprint;
+        bool fixedSize = ps.SizeMode == PointerSizeMode.Fixed;
+        float rx = fixedSize ? ps.FixedSize * 0.5f : MathF.Max(f.Rx * zoom, 1.5f);
+        float ry = fixedSize ? rx : MathF.Max(f.Ry * zoom, 1.5f);
+        float r = MathF.Max(rx, ry);
+        switch (ps.Style)
+        {
+            case PointerStyle.Dot:
+                ds.FillCircle(c, MathF.Max(r, 2f), col);
+                break;
+            case PointerStyle.Ring:
+                ds.DrawCircle(c, MathF.Max(r, 2f), col, lw);
+                break;
+            case PointerStyle.Crosshair:
+            {
+                float arm = MathF.Max(r, 5f) + 3f, gap = 2f;
+                ds.DrawLine(c.X - arm, c.Y, c.X - gap, c.Y, col, lw);
+                ds.DrawLine(c.X + gap, c.Y, c.X + arm, c.Y, col, lw);
+                ds.DrawLine(c.X, c.Y - arm, c.X, c.Y - gap, col, lw);
+                ds.DrawLine(c.X, c.Y + gap, c.X, c.Y + arm, col, lw);
+                break;
+            }
+            default: // Nib: the footprint at the current tilt, or a circle when a fixed size is chosen
+                if (fixedSize) ds.DrawCircle(c, rx, col, lw);
+                else
+                {
+                    var old = ds.Transform;
+                    ds.Transform = Matrix3x2.CreateRotation(f.Angle) * Matrix3x2.CreateTranslation(c);
+                    if (f.Shape == FootprintShape.Rect) ds.DrawRectangle(-rx, -ry, 2 * rx, 2 * ry, col, lw);
+                    else ds.DrawEllipse(0, 0, rx, ry, col, lw);
+                    ds.Transform = old;
+                }
+                break;
+        }
+        if (ps.CenterDot) ds.FillCircle(c, 1.5f, col);
     }
 
     public static Vector2[] SelectionHandles(Rect r) => new[]

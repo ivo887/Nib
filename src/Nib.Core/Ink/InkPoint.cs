@@ -37,6 +37,14 @@ public enum PenKind : byte
     Fountain = 1,
     Pencil = 2,
     Highlighter = 3,
+    /// <summary>Round brush: pressure spreads the bristles, leaning lays them flat along the lean direction.</summary>
+    Brush = 4,
+    /// <summary>Flat chisel nib with crisp edges: thick across the edge, hairline along it.</summary>
+    Calligraphy = 5,
+    /// <summary>Translucent felt tip that never stacks on itself; leaning broadens it.</summary>
+    Marker = 6,
+    /// <summary>Wide, pale wash that sits under the ink; pressure adds pigment, leaning spreads it.</summary>
+    Watercolor = 7,
 }
 
 [System.Flags]
@@ -56,5 +64,8 @@ public enum StrokeFlags : byte
 public static class PenKindExtensions
 {
     /// <summary>Inks that behave like translucent media: drawn with a "darken" (min) blend so overlaps never stack.</summary>
-    public static bool IsMultiplyInk(this PenKind k) => k is PenKind.Pencil or PenKind.Highlighter;
+    public static bool IsMultiplyInk(this PenKind k) => k is PenKind.Pencil or PenKind.Highlighter or PenKind.Marker or PenKind.Watercolor;
+
+    /// <summary>Washes and highlighters are painted underneath the page text and ink, so writing stays readable on top of them.</summary>
+    public static bool IsBackgroundInk(this PenKind k) => k is PenKind.Highlighter or PenKind.Watercolor;
 }

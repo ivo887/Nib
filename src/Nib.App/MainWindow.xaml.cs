@@ -32,6 +32,8 @@ public sealed partial class MainWindow : Window, IInkEngineHost
     private readonly WindowManager _windows;
     private readonly DispatcherQueue _ui;
     private readonly Toolbar _toolbar = new();
+    /// <summary>Notebook rail, section tabs and page list behind one object (see <see cref="Sidebar"/>).</summary>
+    private Sidebar SidebarControl = null!;
     private readonly UiStallWatchdog _watchdog;
     private readonly DebugOverlay _debug;
     private readonly Task<StorageService> _storageTask;
@@ -57,11 +59,13 @@ public sealed partial class MainWindow : Window, IInkEngineHost
         _storageTask = Task.Run(() => new StorageService(AppPaths.Database));
         _settings = new SettingsStore(AppPaths.Settings);
         InitializeComponent();
+        SidebarControl = new Sidebar(RailControl, TabsControl, PagesControl);
         StartupClock.Mark("XamlLoaded");
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(DragRegion);
         _windows = new WindowManager(this, Settings.Placement);
+        Platform.CursorHider.RecoverAfterCrash(AppPaths.DataFolder);
         _windows.AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
         _windows.RestorePlacement();
 
@@ -70,6 +74,7 @@ public sealed partial class MainWindow : Window, IInkEngineHost
             $"device {_engine?.DeviceDescription}\n{_engine?.InputDescription}\nstrokes on page {_engine?.StrokeCount}\nsafe area {_windows.SafeArea}");
 
         ApplyTheme();
+        ApplyBackdrop();
         BuildToolbar();
         ApplyDock(Settings.ToolbarDock);
         WireSidebar();
@@ -86,6 +91,9 @@ public sealed partial class MainWindow : Window, IInkEngineHost
         _windows.DisplayModeChanged += OnDisplayChanged;
         _windows.PostureChanged += () => { _device = _device with { SlateMode = DeviceProbe.IsSlateMode() }; ApplyDeviceTuning(); };
         _windows.AppWindow.Closing += OnClosing;
+        // Never leave the cursor hidden when focus moves to another window or Nib closes.
+        Activated += (_, e) => { if (e.WindowActivationState == WindowActivationState.Deactivated) { _pointerOverPage = false; UpdateSystemCursor(); } };
+        Closed += (_, _) => { _pointerOverPage = false; UpdateSystemCursor(); if (Platform.CursorHider.IsBlank) Platform.CursorHider.Restore(); };
         Activated += OnFirstActivated;
 
         _toastTimer = _ui.CreateTimer();
@@ -122,7 +130,7 @@ public sealed partial class MainWindow : Window, IInkEngineHost
     private void ApplyDeviceTuning()
     {
         _engine?.ConfigureDevice(Settings.PerformanceModeWhileWriting, CpuTopology.PerformanceCores(_device.Cores));
-        double size = DeviceTuner.ToolbarButtonSize(_device.SlateMode);
+        double size = Settings.ToolbarButtonSize > 0 ? Settings.ToolbarButtonSize : DeviceTuner.ToolbarButtonSize(_device.SlateMode);
         if (_toolbar.ButtonSize != size)
         {
             _toolbar.ButtonSize = size;
@@ -161,9 +169,10 @@ public sealed partial class MainWindow : Window, IInkEngineHost
             return;
         }
         StartupClock.Mark("StorageOpen");
+        if (DataLocation.StartupMessage is { } note) { ShowToast(note); }
         var tagDefs = await _storage.Read(s => s.ListTagDefinitions());
         foreach (var t in tagDefs) _tags[t.Id] = t;
-        _export = new ExportService(_storage, _windows.Hwnd, () => _tags);
+        _export = new ExportService(_storage, _windows.Hwnd, () => _tags, () => Settings);
         TryStartEngine();
         await LoadInitialPageAsync();
     }
@@ -247,16 +256,88 @@ public sealed partial class MainWindow : Window, IInkEngineHost
     {
         var kind = _toolbar.ActiveKind;
         return new ToolState(kind, Settings.ActivePenPreset, Settings.Highlighter, Settings.EraserMode, Settings.EraserSize,
-            Settings.BarrelButton, Settings.TouchDraws, Settings.PredictionMs, Settings.AutoPrediction);
+            Settings.BarrelButton, Settings.TouchDraws, Settings.PredictionMs, Settings.AutoPrediction,
+            Settings.Pointer, Settings.TwoFingerTapUndo, Settings.ThreeFingerTapRedo, Settings.PalmRejectionMs, Settings.PalmSizeDips,
+            Settings.ShapeSnap, Settings.ShapeSnapHoldMs, Settings.SnapLineAngles, Settings.Tilt);
     }
 
     private void PushTool()
     {
         if (_engine is not null) _engine.Tool = CurrentToolState();
+        UpdateSystemCursor(); // the text tool shows its own I-beam, the others may hide the cross
+    }
+
+    /// <summary>Rebuilds the toolbar buttons from the user's item list and size setting.</summary>
+    private void BuildToolbarControls()
+    {
+        Settings.ToolbarItems = ToolbarLayout.Normalize(Settings.ToolbarItems);
+        // In full-screen focus mode the toolbar becomes a dock: navigator first, sidebar and exit buttons last.
+        _toolbar.Items = _windows?.IsFullScreen == true ? ToolbarLayout.ForFocus(Settings.ToolbarItems) : Settings.ToolbarItems;
+        _toolbar.Floating = _windows?.IsFullScreen == true;
+        _toolbar.ShapeSnapOn = Settings.ShapeSnap;
+        _toolbar.NavLabel = string.IsNullOrWhiteSpace(_pageTitle) ? "Untitled page" : _pageTitle;
+        _toolbar.ButtonSize = PreferredButtonSize();
+        _toolbar.Build(Settings.Pens, Settings.Highlighter, _toolbar.ActiveKind, Settings.ActivePen);
+        // How wide the toolbar really is decides whether it fits in the title bar or has to move to the bottom edge.
+        _toolbar.Measure(new Windows.Foundation.Size(double.PositiveInfinity, 120));
+        _toolbarWidth = _widthAtPreferred = _toolbar.Orientation == Orientation.Horizontal ? _toolbar.DesiredSize.Width : 0;
+    }
+
+    private double _toolbarWidth, _widthAtPreferred;
+
+    /// <summary>Width a floating horizontal toolbar may use: the page area (or the whole screen in focus mode) minus its margins.</summary>
+    private double ToolbarSpace()
+    {
+        double rootWidth = Root.ActualWidth > 0 ? Root.ActualWidth : 1200;
+        return _focus ? rootWidth - 40 : Math.Max(240, (_panes.PageWidthLeft > 0 ? _panes.PageWidthLeft : rootWidth) - 24);
+    }
+
+    /// <summary>The button size the user chose, or the device's (larger in tablet posture).</summary>
+    private double PreferredButtonSize() =>
+        Settings.ToolbarButtonSize > 0 ? Settings.ToolbarButtonSize : DeviceTuner.ToolbarButtonSize(_device.SlateMode);
+
+    /// <summary>
+    /// A horizontal toolbar that is wider than the space it floats in (a narrow window, a bottom dock) shrinks its buttons a step
+    /// at a time until it fits, rather than running off the edge of the page and hiding the menu button.
+    /// </summary>
+    private void FitToolbarWidth(double available)
+    {
+        if (_toolbar.Orientation != Orientation.Horizontal || available <= 0) return;
+        foreach (double size in new[] { 36.0, 32.0, 28.0 })
+        {
+            if (_toolbarWidth <= available) return;
+            if (size >= _toolbar.ButtonSize) continue;
+            _toolbar.ButtonSize = size;
+            _toolbar.Build(Settings.Pens, Settings.Highlighter, _toolbar.ActiveKind, Settings.ActivePen);
+            _toolbar.Measure(new Windows.Foundation.Size(double.PositiveInfinity, 120));
+            _toolbarWidth = _toolbar.DesiredSize.Width;
+        }
+    }
+
+    /// <summary>Does the toolbar fit in the title bar beside the list toggle, the navigator, the page title and the window buttons?</summary>
+    private bool TopDockFits(double windowWidth)
+    {
+        // Use the widths the title-bar items will really have at this window size (they scale with it), the real
+        // caption-button inset (larger on high-DPI tablets) and a minimum strip left for dragging the window.
+        double caption = CaptionColumn.Width.Value > 0 ? CaptionColumn.Width.Value : 138;
+        double title = Math.Clamp(windowWidth * 0.2, 100, 300);
+        double nav = Math.Clamp(windowWidth * 0.2, 90, 260) + 44;
+        return windowWidth >= _widthAtPreferred + 40 + nav + title + caption + 96;
     }
 
     private void BuildToolbar()
     {
+        // Older settings files get the buttons that were added since (the full-screen focus button) exactly once.
+        if (Settings.ToolbarVersion < ToolbarLayout.CurrentVersion)
+        {
+            Settings.ToolbarItems = ToolbarLayout.Migrate(Settings.ToolbarItems, Settings.ToolbarVersion);
+            Settings.ToolbarVersion = ToolbarLayout.CurrentVersion;
+            _settings.SaveSoon();
+        }
+        Settings.ToolbarItems = ToolbarLayout.Normalize(Settings.ToolbarItems);
+        _toolbar.Items = Settings.ToolbarItems;
+        _toolbar.ShapeSnapOn = Settings.ShapeSnap;
+        if (Settings.ToolbarButtonSize > 0) _toolbar.ButtonSize = Settings.ToolbarButtonSize;
         _toolbar.Build(Settings.Pens, Settings.Highlighter, ToolKind.Pen, Math.Clamp(Settings.ActivePen, 0, Math.Max(0, Settings.Pens.Count - 1)));
         _toolbar.ToolSelected += (kind, index) =>
         {
@@ -265,6 +346,8 @@ public sealed partial class MainWindow : Window, IInkEngineHost
             _settings.SaveSoon();
         };
         _toolbar.ToolSettingsRequested += ShowToolSettings;
+        _toolbar.CommandInvoked += OnToolbarCommand;
+        _toolbar.SnapToggled += SetShapeSnap;
         _toolbar.UndoClicked += () => _engine?.Undo();
         _toolbar.RedoClicked += () => _engine?.Redo();
         _toolbar.AddPenClicked += () =>
@@ -276,9 +359,19 @@ public sealed partial class MainWindow : Window, IInkEngineHost
         };
     }
 
+    /// <summary>Turns shape and line snapping on or off from the toolbar, the menu or Settings.</summary>
+    private void SetShapeSnap(bool on)
+    {
+        Settings.ShapeSnap = on;
+        _toolbar.ShapeSnapOn = on;
+        PushTool();
+        _settings.SaveSoon();
+        ShowToast(on ? "Snapping on: hold the pen still at the end of a stroke" : "Snapping off");
+    }
+
     private void RebuildToolbar()
     {
-        _toolbar.Build(Settings.Pens, Settings.Highlighter, _toolbar.ActiveKind, Settings.ActivePen);
+        BuildToolbarControls();
         PushTool();
         _settings.SaveSoon();
     }
@@ -336,73 +429,270 @@ public sealed partial class MainWindow : Window, IInkEngineHost
         TitleToolbarHost.Content = null;
         EdgeToolbarHost.Content = null;
         _toolbar.Orientation = dock is DockSide.Top or DockSide.Bottom ? Orientation.Horizontal : Orientation.Vertical;
-        _toolbar.Build(Settings.Pens, Settings.Highlighter, _toolbar.ActiveKind, Settings.ActivePen);
-        var layout = ResponsiveLayout.Decide(Root.ActualWidth > 0 ? Root.ActualWidth : 1200, Root.ActualHeight > 0 ? Root.ActualHeight : 800, dock);
-        // On narrow windows a top toolbar would crowd the title bar: move it to the bottom edge.
-        var effective = dock == DockSide.Top && layout.CompactToolbar ? DockSide.Bottom : dock;
-        if (effective == DockSide.Top)
+        BuildToolbarControls();
+        bool focus = _windows.IsFullScreen;
+        var layout = PaneLayoutRules.Decide(Root.ActualWidth > 0 ? Root.ActualWidth : 1200, Root.ActualHeight > 0 ? Root.ActualHeight : 800, dock, Settings.RailCompact, Settings.PagesHidden);
+
+        // Normal window: a top toolbar lives in the title bar (or moves to the bottom edge when that is too narrow).
+        // Full-screen focus mode has no title bar: the toolbar floats over the page as a dock on the chosen edge.
+        var effective = !focus && dock == DockSide.Top && (layout.CompactToolbar || !TopDockFits(Root.ActualWidth > 0 ? Root.ActualWidth : 1200)) ? DockSide.Bottom : dock;
+        if (effective == DockSide.Top && !focus)
         {
             TitleToolbarHost.Content = _toolbar;
             return;
         }
         EdgeToolbarHost.Content = _toolbar;
+        double rootWidth = Root.ActualWidth > 0 ? Root.ActualWidth : 1200;
+        FitToolbarWidth(ToolbarSpace());
+        const int Margin = 14;
+        if (focus)
+        {
+            // Over the page, on every row and column, so showing it never shifts the writing area.
+            Grid.SetRow(EdgeToolbarHost, 0); Grid.SetRowSpan(EdgeToolbarHost, 3);
+            Grid.SetColumn(EdgeToolbarHost, 0); Grid.SetColumnSpan(EdgeToolbarHost, 3);
+            EdgeToolbarHost.Margin = new Thickness(Margin);
+            Canvas.SetZIndex(EdgeToolbarHost, 10);
+        }
+        else
+        {
+            Grid.SetRowSpan(EdgeToolbarHost, 1); Grid.SetColumnSpan(EdgeToolbarHost, 1);
+            EdgeToolbarHost.Margin = new Thickness(0, 0, 0, 8);
+        }
         switch (effective)
         {
+            case DockSide.Top: // focus mode only
+                EdgeToolbarHost.HorizontalAlignment = HorizontalAlignment.Center;
+                EdgeToolbarHost.VerticalAlignment = VerticalAlignment.Top;
+                break;
             case DockSide.Bottom:
-                Grid.SetRow(EdgeToolbarHost, 2); Grid.SetColumn(EdgeToolbarHost, 1);
+                if (!focus) { Grid.SetRow(EdgeToolbarHost, 2); Grid.SetColumn(EdgeToolbarHost, 1); }
                 EdgeToolbarHost.HorizontalAlignment = HorizontalAlignment.Center;
                 EdgeToolbarHost.VerticalAlignment = VerticalAlignment.Bottom;
                 break;
             case DockSide.Left:
-                Grid.SetRow(EdgeToolbarHost, 1); Grid.SetColumn(EdgeToolbarHost, 0);
+                if (!focus) { Grid.SetRow(EdgeToolbarHost, 1); Grid.SetColumn(EdgeToolbarHost, 0); }
                 EdgeToolbarHost.HorizontalAlignment = HorizontalAlignment.Left;
                 EdgeToolbarHost.VerticalAlignment = VerticalAlignment.Center;
+                if (!focus) EdgeToolbarHost.Margin = new Thickness(0);
                 break;
             case DockSide.Right:
-                Grid.SetRow(EdgeToolbarHost, 1); Grid.SetColumn(EdgeToolbarHost, 2);
+                if (!focus) { Grid.SetRow(EdgeToolbarHost, 1); Grid.SetColumn(EdgeToolbarHost, 2); }
                 EdgeToolbarHost.HorizontalAlignment = HorizontalAlignment.Right;
                 EdgeToolbarHost.VerticalAlignment = VerticalAlignment.Center;
+                if (!focus) EdgeToolbarHost.Margin = new Thickness(0);
                 break;
         }
     }
 
     private DockSide _lastEffectiveDock = (DockSide)255;
+    private PaneLayout _panes;
+    private bool _focus, _railDrawerOpen, _pagesDrawerOpen;
+    private string _pageTitle = "";
 
+    /// <summary>
+    /// Lays the shell out for the current window size and mode: notebook rail, section tabs and page list shrink into drawers as
+    /// the window narrows, and full-screen focus mode hides all of them (they come back as drawers from the dock).
+    /// </summary>
     private void ApplyResponsiveLayout()
     {
         double w = Root.ActualWidth, h = Root.ActualHeight;
         if (w <= 0) return;
-        var layout = ResponsiveLayout.Decide(w, h, Settings.ToolbarDock);
-        Split.DisplayMode = layout.SidebarOverlays ? SplitViewDisplayMode.Overlay : SplitViewDisplayMode.Inline;
-        Split.OpenPaneLength = layout.SidebarWidth;
-        Split.PanePlacement = Settings.SidebarOnRight ? SplitViewPanePlacement.Right : SplitViewPanePlacement.Left;
-        if (layout.SidebarOverlays && Split.IsPaneOpen && !_userOpenedOverlay) Split.IsPaneOpen = false;
-        else if (!layout.SidebarOverlays) Split.IsPaneOpen = !Settings.SidebarCollapsed && !_windows.IsFullScreen;
-        var effective = Settings.ToolbarDock == DockSide.Top && layout.CompactToolbar ? DockSide.Bottom : Settings.ToolbarDock;
-        if (effective != _lastEffectiveDock)
+        bool wasFocus = _focus;
+        _focus = _windows.IsFullScreen;
+        var l = PaneLayoutRules.Decide(w, h, Settings.ToolbarDock, Settings.RailCompact, Settings.PagesHidden);
+        _panes = l;
+
+        // Drawers float over the page, so they need a surface; panes that sit inline stay on the window material.
+        bool darkUi = Root.ActualTheme == ElementTheme.Dark;
+        var surface = new Microsoft.UI.Xaml.Media.SolidColorBrush(Colors2D.From(darkUi ? 0xFF2B2B2B : 0xFFFAFAFA));
+        var clear = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
+
+        // Left-handed layout: the notebook list and the page list swap sides.
+        bool swap = Settings.SidebarOnRight;
+        RailSplit.PanePlacement = swap ? SplitViewPanePlacement.Right : SplitViewPanePlacement.Left;
+        PageSplit.PanePlacement = swap ? SplitViewPanePlacement.Left : SplitViewPanePlacement.Right;
+
+        // Notebook rail.
+        if (_focus)
+        {
+            RailSplit.DisplayMode = SplitViewDisplayMode.Overlay;
+            RailSplit.CompactPaneLength = 0;
+            RailSplit.OpenPaneLength = PaneLayoutRules.ExpandedRailWidth;
+            RailSplit.PaneBackground = surface;
+            RailSplit.IsPaneOpen = _railDrawerOpen;
+            RailControl.Expanded = true;
+        }
+        else switch (l.Rail)
+        {
+            case RailMode.Expanded:
+                RailSplit.DisplayMode = SplitViewDisplayMode.Inline;
+                RailSplit.OpenPaneLength = PaneLayoutRules.ExpandedRailWidth;
+                RailSplit.PaneBackground = clear;
+                RailSplit.IsPaneOpen = true;
+                RailControl.Expanded = true;
+                break;
+            case RailMode.Compact:
+                // A strip of badges that expands over the page (not pushing it) while open.
+                RailSplit.DisplayMode = SplitViewDisplayMode.CompactOverlay;
+                RailSplit.CompactPaneLength = PaneLayoutRules.CompactRailWidth;
+                RailSplit.OpenPaneLength = PaneLayoutRules.ExpandedRailWidth;
+                RailSplit.PaneBackground = RailSplit.IsPaneOpen ? surface : clear;
+                if (wasFocus) RailSplit.IsPaneOpen = false;
+                RailControl.Expanded = RailSplit.IsPaneOpen;
+                break;
+            default:
+                RailSplit.DisplayMode = SplitViewDisplayMode.Overlay;
+                RailSplit.CompactPaneLength = 0;
+                RailSplit.OpenPaneLength = PaneLayoutRules.ExpandedRailWidth;
+                RailSplit.PaneBackground = surface;
+                if (!_railDrawerOpen) RailSplit.IsPaneOpen = false;
+                RailControl.Expanded = true;
+                break;
+        }
+
+        // Page list.
+        if (!_focus && l.Pages == PagePaneMode.Inline)
+        {
+            PageSplit.DisplayMode = SplitViewDisplayMode.Inline;
+            PageSplit.OpenPaneLength = l.PageWidth;
+            PageSplit.PaneBackground = clear;
+            PageSplit.IsPaneOpen = true;
+        }
+        else
+        {
+            PageSplit.DisplayMode = SplitViewDisplayMode.Overlay;
+            PageSplit.OpenPaneLength = Math.Clamp(l.PageWidth, 240, 300);
+            PageSplit.PaneBackground = surface;
+            PageSplit.IsPaneOpen = _pagesDrawerOpen;
+        }
+
+        // Title bar and section tabs: gone in focus mode (the dock has the navigator instead).
+        TitleBar.Visibility = _focus ? Visibility.Collapsed : Visibility.Visible;
+        TitleRow.Height = new GridLength(_focus ? 0 : 48);
+        TabsControl.Visibility = _focus ? Visibility.Collapsed : Visibility.Visible;
+        TabsControl.Compact = l.CompactTabs;
+        TabsControl.PagesShown = PageSplit.IsPaneOpen;
+
+        var effective = !_focus && Settings.ToolbarDock == DockSide.Top && (l.CompactToolbar || !TopDockFits(w)) ? DockSide.Bottom : Settings.ToolbarDock;
+        if (effective != _lastEffectiveDock || wasFocus != _focus)
         {
             _lastEffectiveDock = effective;
             ApplyDock(Settings.ToolbarDock);
         }
-        TitleBox.Width = Math.Clamp(w * 0.22, 120, 320);
+        // A floating toolbar keeps fitting as the window is dragged narrower, and grows back when there is room again.
+        else if (EdgeToolbarHost.Content == _toolbar && _toolbar.Orientation == Orientation.Horizontal)
+        {
+            double space = ToolbarSpace();
+            bool shrink = _toolbarWidth > space && _toolbar.ButtonSize > 28;
+            bool grow = _toolbar.ButtonSize < PreferredButtonSize() && _widthAtPreferred <= space;
+            if (shrink || grow) ApplyDock(Settings.ToolbarDock);
+        }
+        TitleBox.Width = Math.Clamp(w * 0.2, 100, 300);
+        NavText.MaxWidth = Math.Clamp(w * 0.2, 90, 260);
     }
 
-    private bool _userOpenedOverlay;
+    /// <summary>Notebook list button: wide windows switch it between names and badges, narrower ones open it as a drawer.</summary>
+    private void ToggleSidebar()
+    {
+        if (_focus)
+        {
+            // Focus mode: one button brings both lists back as drawers, and sends them away again.
+            bool open = !(_railDrawerOpen || _pagesDrawerOpen);
+            _railDrawerOpen = _pagesDrawerOpen = open;
+            ApplyResponsiveLayout();
+            return;
+        }
+        switch (_panes.Rail)
+        {
+            case RailMode.Expanded:
+                Settings.RailCompact = true;
+                _settings.SaveSoon();
+                ApplyResponsiveLayout();
+                break;
+            case RailMode.Compact when Settings.RailCompact && Root.ActualWidth >= PaneLayoutRules.ExpandedAt:
+                Settings.RailCompact = false;
+                _settings.SaveSoon();
+                ApplyResponsiveLayout();
+                break;
+            default:
+                RailSplit.IsPaneOpen = !RailSplit.IsPaneOpen;
+                _railDrawerOpen = RailSplit.IsPaneOpen && _panes.Rail == RailMode.Hidden;
+                break;
+        }
+    }
+
+    /// <summary>Page list button (end of the section bar): hides or shows the inline list, or opens the drawer on narrow windows.</summary>
+    private void TogglePages()
+    {
+        if (!_focus && _panes.Pages == PagePaneMode.Inline)
+        {
+            Settings.PagesHidden = true;
+            _settings.SaveSoon();
+            ApplyResponsiveLayout();
+        }
+        else if (!_focus && Settings.PagesHidden && PaneLayoutRules.Decide(Root.ActualWidth, Root.ActualHeight, Settings.ToolbarDock, Settings.RailCompact, false).Pages == PagePaneMode.Inline)
+        {
+            Settings.PagesHidden = false;
+            _settings.SaveSoon();
+            ApplyResponsiveLayout();
+        }
+        else
+        {
+            _pagesDrawerOpen = !PageSplit.IsPaneOpen;
+            PageSplit.IsPaneOpen = _pagesDrawerOpen;
+            TabsControl.PagesShown = _pagesDrawerOpen;
+        }
+    }
 
     private void SidebarToggle_Click(object sender, RoutedEventArgs e) => ToggleSidebar();
 
-    private void ToggleSidebar()
+    private void NavButton_Click(object sender, RoutedEventArgs e) => ShowNavigator(NavButton);
+
+    /// <summary>The notebook / section / page manager dropdown, anchored to the title bar button or the dock.</summary>
+    private void ShowNavigator(FrameworkElement anchor)
     {
-        Split.IsPaneOpen = !Split.IsPaneOpen;
-        if (Split.DisplayMode == SplitViewDisplayMode.Inline) Settings.SidebarCollapsed = !Split.IsPaneOpen;
-        else _userOpenedOverlay = Split.IsPaneOpen;
-        _settings.SaveSoon();
+        var flyout = NavigatorFlyout.Create(SidebarControl);
+        flyout.ShowAt(anchor);
+    }
+
+    /// <summary>Closes any open drawer (after choosing a page, so the page is not left covered).</summary>
+    private void CloseDrawers()
+    {
+        _pagesDrawerOpen = false;
+        if (PageSplit.DisplayMode == SplitViewDisplayMode.Overlay) PageSplit.IsPaneOpen = false;
+        if (RailSplit.DisplayMode != SplitViewDisplayMode.Inline && (_focus || _panes.Rail == RailMode.Hidden)) { _railDrawerOpen = false; RailSplit.IsPaneOpen = false; }
+        TabsControl.PagesShown = PageSplit.IsPaneOpen;
+    }
+
+    /// <summary>Navigator and title-bar text: "Notebook › Section".</summary>
+    private void UpdateNavText()
+    {
+        string nb = _notebook?.Name ?? "Notebook";
+        NavText.Text = _section is null ? nb : $"{nb} › {_section.Name}";
+        SidebarControl.PagesTitle = _section?.Name ?? "";
     }
 
     private void UpdateCaptionInset()
     {
         double scale = Root.XamlRoot?.RasterizationScale ?? 1;
         CaptionColumn.Width = new GridLength(Math.Max(0, _windows.AppWindow.TitleBar.RightInset / scale));
+    }
+
+    /// <summary>Sets the material behind the window (Windows 11 Mica / Mica Alt / Acrylic). Falls back to solid on older systems.</summary>
+    private void ApplyBackdrop()
+    {
+        try
+        {
+            SystemBackdrop = Settings.Backdrop switch
+            {
+                BackdropKind.Mica => new Microsoft.UI.Xaml.Media.MicaBackdrop { Kind = Microsoft.UI.Composition.SystemBackdrops.MicaKind.Base },
+                BackdropKind.MicaAlt => new Microsoft.UI.Xaml.Media.MicaBackdrop { Kind = Microsoft.UI.Composition.SystemBackdrops.MicaKind.BaseAlt },
+                BackdropKind.Acrylic => new Microsoft.UI.Xaml.Media.DesktopAcrylicBackdrop(),
+                _ => null,
+            };
+        }
+        catch (Exception) { SystemBackdrop = null; }
+        ApplyTheme(); // the root background depends on whether a backdrop is active
     }
 
     private void ApplyTheme()
@@ -414,8 +704,23 @@ public sealed partial class MainWindow : Window, IInkEngineHost
             _ => ElementTheme.Default,
         };
         bool dark = Root.ActualTheme == ElementTheme.Dark;
+        // Caption buttons follow the system theme by default; match them to the app theme so they stay visible.
+        var caption = _windows.AppWindow.TitleBar;
+        var fg = dark ? Windows.UI.Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF) : Windows.UI.Color.FromArgb(0xFF, 0x1A, 0x1A, 0x1A);
+        var clear = Windows.UI.Color.FromArgb(0, 0, 0, 0);
+        caption.ButtonBackgroundColor = clear;
+        caption.ButtonInactiveBackgroundColor = clear;
+        caption.ButtonForegroundColor = fg;
+        caption.ButtonHoverForegroundColor = fg;
+        caption.ButtonPressedForegroundColor = fg;
+        caption.ButtonInactiveForegroundColor = Windows.UI.Color.FromArgb(0xFF, 0x8A, 0x8A, 0x8A);
+        caption.ButtonHoverBackgroundColor = dark ? Windows.UI.Color.FromArgb(0x19, 0xFF, 0xFF, 0xFF) : Windows.UI.Color.FromArgb(0x0F, 0, 0, 0);
+        caption.ButtonPressedBackgroundColor = dark ? Windows.UI.Color.FromArgb(0x0D, 0xFF, 0xFF, 0xFF) : Windows.UI.Color.FromArgb(0x09, 0, 0, 0);
         _darkPages = dark && Settings.InvertPagesInDarkTheme;
-        Root.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Colors2D.From(_darkPages ? 0xFF1B1B1D : 0xFFE9E9EC));
+        // With Mica/Acrylic the window material shows through; with None, fall back to a plain Windows 11 surface.
+        Root.Background = Settings.Backdrop == BackdropKind.None
+            ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Colors2D.From(dark ? 0xFF202020 : 0xFFF3F3F3))
+            : new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
         _engine?.SetDarkMode(_darkPages, Settings.OledBlackPages);
         if (_editor is not null) _editor.DarkPages = _darkPages;
     }
@@ -495,9 +800,9 @@ public sealed partial class MainWindow : Window, IInkEngineHost
 
     private void ToggleFocusMode()
     {
+        _railDrawerOpen = _pagesDrawerOpen = false;
         _windows.ToggleFullScreen();
-        if (_windows.IsFullScreen) Split.IsPaneOpen = false;
-        else ApplyResponsiveLayout();
+        ApplyResponsiveLayout(); // title bar, tabs and lists out (or back), the toolbar becomes the dock (or returns)
     }
 
     // =====================================================================================
@@ -615,11 +920,37 @@ public sealed partial class MainWindow : Window, IInkEngineHost
         TitleBox.Text = title;
         _suppressTitle = false;
         Title = string.IsNullOrWhiteSpace(title) ? "Nib" : $"{title} – Nib";
+        _pageTitle = title;
+        _toolbar.NavLabel = string.IsNullOrWhiteSpace(title) ? "Untitled page" : title;
         SidebarControl.SelectPage(pageId);
         SelectionBar.Visibility = Visibility.Collapsed;
     }
 
     public void OnStatus(string message) => ShowToast(message);
+
+    // ---- the Windows cursor over the page ----
+
+    private bool _pointerOverPage, _cursorHidden;
+
+    public void OnPageHoverChanged(bool over)
+    {
+        _pointerOverPage = over;
+        UpdateSystemCursor();
+    }
+
+    /// <summary>
+    /// Hides the Windows cursor over the page when the user chose Hidden, or Automatic with a Nib-drawn pointer
+    /// (so the cross is not drawn on top of it). The text tool always keeps its I-beam.
+    /// </summary>
+    private void UpdateSystemCursor()
+    {
+        var p = Settings.Pointer;
+        bool hideMode = p.SystemCursor == SystemCursorMode.Hidden || (p.SystemCursor == SystemCursorMode.Auto && p.Style != PointerStyle.None);
+        bool hide = _pointerOverPage && hideMode && _toolbar.ActiveKind != ToolKind.Text;
+        if (hide == _cursorHidden) return;
+        _cursorHidden = hide;
+        if (hide) Platform.CursorHider.Blank(); else Platform.CursorHider.Restore();
+    }
 
     private void ShowToast(string message)
     {

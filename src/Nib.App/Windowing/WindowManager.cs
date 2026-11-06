@@ -40,6 +40,9 @@ internal sealed unsafe class WindowManager : IDisposable
     public IntPtr Hwnd => _hwnd;
     public bool IsFullScreen => _appWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen;
     private string? _lastMonitorKey;
+    /// <summary>Smallest window the shell lays out well (DIPs).</summary>
+    public const int MinWidthDips = 480, MinHeightDips = 360;
+    private RectI _lastWork;
 
     public WindowManager(Window window, PlacementStore store)
     {
@@ -64,8 +67,10 @@ internal sealed unsafe class WindowManager : IDisposable
         DisplayArea? target = null;
         if (_store.LastMonitor is { } key)
         {
-            foreach (var da in DisplayArea.FindAll())
-                if (MonitorKey(da) == key) { target = da; break; }
+            // Index instead of foreach: enumerating a WinRT IReadOnlyList throws InvalidCastException under Native AOT.
+            var areas = DisplayArea.FindAll();
+            for (int i = 0; i < areas.Count; i++)
+                if (MonitorKey(areas[i]) == key) { target = areas[i]; break; }
         }
         target ??= DisplayArea.GetFromWindowId(_appWindow.Id, DisplayAreaFallback.Primary);
         var work = ToRect(target.WorkArea);
@@ -141,6 +146,14 @@ internal sealed unsafe class WindowManager : IDisposable
                 // Let Windows finish its own repositioning first, then re-check.
                 self?._window.DispatcherQueue.TryEnqueue(() => self.OnWorkAreaChanged());
             }
+            if (msg == Win32.WM_GETMINMAXINFO && lParam != IntPtr.Zero)
+            {
+                // Below this the shell cannot lay itself out; scale with the monitor the window is on.
+                var info = (Win32.MINMAXINFO*)lParam;
+                double scale = Math.Max(1, Win32.GetDpiForWindow(hwnd)) / 96.0;
+                info->ptMinTrackSize.X = (int)Math.Ceiling(MinWidthDips * scale);
+                info->ptMinTrackSize.Y = (int)Math.Ceiling(MinHeightDips * scale);
+            }
             if (msg == Win32.WM_DISPLAYCHANGE)
                 self?._window.DispatcherQueue.TryEnqueue(() => self.DisplayModeChanged?.Invoke());
             else if (msg == Win32.WM_SETTINGCHANGE && lParam != IntPtr.Zero
@@ -153,15 +166,19 @@ internal sealed unsafe class WindowManager : IDisposable
 
     private void OnWorkAreaChanged()
     {
-        // Maximized windows are resized by Windows; restored windows can end up under a moved taskbar.
+        // Maximized windows are resized by Windows. A restored window that filled the work area (snapped to full size, or sized
+        // by hand to it) should keep filling it when the taskbar moves, resizes or auto-hides; any other restored window
+        // just has to stay inside the new work area.
         if (_appWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Restored })
         {
             var da = DisplayArea.GetFromWindowId(_appWindow.Id, DisplayAreaFallback.Nearest);
             var work = ToRect(da.WorkArea);
             var r = new RectI(_appWindow.Position.X, _appWindow.Position.Y, _appWindow.Size.Width, _appWindow.Size.Height);
-            var clamped = PlacementCalculator.ClampToWorkArea(r, work);
-            if (clamped != r) _appWindow.MoveAndResize(new RectInt32(clamped.X, clamped.Y, clamped.Width, clamped.Height));
+            var target = PlacementCalculator.FollowWorkArea(r, _lastWork, work);
+            if (target != r) _appWindow.MoveAndResize(new RectInt32(target.X, target.Y, target.Width, target.Height));
+            _lastWork = work;
         }
+        else if (DisplayArea.GetFromWindowId(_appWindow.Id, DisplayAreaFallback.Nearest) is { } display) _lastWork = ToRect(display.WorkArea);
         Recompute();
     }
 
@@ -172,6 +189,7 @@ internal sealed unsafe class WindowManager : IDisposable
         if (da is null) return;
         var monitor = ToRect(da.OuterBounds);
         var work = ToRect(da.WorkArea);
+        if (_lastWork.IsEmpty) _lastWork = work; // first measurement; later changes are tracked in OnWorkAreaChanged
         double scale = _window.Content?.XamlRoot?.RasterizationScale ?? 1.0;
         var ctx = new ScreenContext(
             ClientRectScreen(),

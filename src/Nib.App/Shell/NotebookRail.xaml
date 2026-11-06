@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="Nib.App.Shell.NotebookRail"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Nib.App.Shell">
+
+    <!-- The notebook rail (left): one badge per notebook, names when there is room, the weekly-use views at the foot. -->
+    <Grid Padding="4,0,4,8" Background="Transparent">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid x:Name="HeaderRow" Margin="8,6,2,4">
+            <TextBlock x:Name="HeaderText" Text="Notebooks" Style="{StaticResource CaptionTextBlockStyle}" Opacity="0.7" VerticalAlignment="Center" />
+            <Button x:Name="AddButton" HorizontalAlignment="Right" Width="30" Height="28" Padding="0" Background="Transparent" BorderThickness="0"
+                    Click="AddNotebook_Click" ToolTipService.ToolTip="New notebook" AutomationProperties.Name="New notebook">
+                <FontIcon Glyph="&#xE710;" FontSize="12" />
+            </Button>
+        </Grid>
+
+        <ListView x:Name="NotebookList" Grid.Row="1" SelectionMode="Single" SelectionChanged="NotebookList_SelectionChanged"
+                  CanReorderItems="True" AllowDrop="True" CanDragItems="True"
+                  DragItemsCompleted="NotebookList_DragItemsCompleted" RightTapped="NotebookList_RightTapped"
+                  ContainerContentChanging="NotebookList_ContainerContentChanging" AutomationProperties.Name="Notebooks">
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <Setter Property="MinHeight" Value="40" />
+                    <Setter Property="Padding" Value="6,0,6,0" />
+                    <Setter Property="Margin" Value="0,1,0,1" />
+                </Style>
+            </ListView.ItemContainerStyle>
+            <ListView.ItemTemplate>
+                <DataTemplate x:DataType="local:NotebookItem">
+                    <StackPanel Orientation="Horizontal" Spacing="10" ToolTipService.ToolTip="{x:Bind Name}">
+                        <Border Width="28" Height="28" CornerRadius="7" Background="{x:Bind Badge}">
+                            <TextBlock Text="{x:Bind Initial}" Foreground="#E61F1F1F" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock x:Name="NameText" Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" MaxWidth="140" />
+                    </StackPanel>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+
+        <StackPanel x:Name="Footer" Grid.Row="2" Spacing="2">
+            <Button x:Name="TagsButton" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Background="Transparent" BorderThickness="0" Click="Tags_Click"
+                    ToolTipService.ToolTip="Tag summary" AutomationProperties.Name="Tag summary">
+                <StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE8EC;" FontSize="14" /><TextBlock x:Name="TagsText" Text="Tags" /></StackPanel>
+            </Button>
+            <Button x:Name="RecentButton" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Background="Transparent" BorderThickness="0" Click="Recent_Click"
+                    ToolTipService.ToolTip="Recent pages" AutomationProperties.Name="Recent pages">
+                <StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE823;" FontSize="14" /><TextBlock x:Name="RecentText" Text="Recent" /></StackPanel>
+            </Button>
+            <Button x:Name="FavoritesButton" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Background="Transparent" BorderThickness="0" Click="Favorites_Click"
+                    ToolTipService.ToolTip="Favorite pages" AutomationProperties.Name="Favorite pages">
+                <StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE734;" FontSize="14" /><TextBlock x:Name="FavoritesText" Text="Favorites" /></StackPanel>
+            </Button>
+        </StackPanel>
+    </Grid>
+</UserControl>

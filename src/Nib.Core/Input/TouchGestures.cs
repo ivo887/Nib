@@ -217,8 +217,12 @@ public sealed class TouchGestureEngine
 public sealed class PalmRejection
 {
     public const long GraceMs = 450;
+    /// <summary>Current grace period (ms); defaults to <see cref="GraceMs"/>, user-adjustable.</summary>
+    public long Grace { get; set; } = GraceMs;
     /// <summary>Contacts wider or taller than this (DIPs) are palms.</summary>
     public const float PalmSize = 34f;
+    /// <summary>Current palm size (DIPs); defaults to <see cref="PalmSize"/>, user-adjustable.</summary>
+    public float Size { get; set; } = PalmSize;
 
     private bool _penInRange;
     private long _penLastSeen = long.MinValue / 2;
@@ -231,7 +235,7 @@ public sealed class PalmRejection
     public bool ShouldRejectTouch(long nowMs, float contactWidth, float contactHeight)
     {
         if (_penInRange) return true;
-        if (nowMs - _penLastSeen < GraceMs) return true;
-        return contactWidth > PalmSize || contactHeight > PalmSize;
+        if (nowMs - _penLastSeen < Grace) return true;
+        return contactWidth > Size || contactHeight > Size;
     }
 }

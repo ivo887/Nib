@@ -35,7 +35,16 @@ public sealed record ToolState(
     BarrelButtonAction Barrel,
     bool TouchDraws,
     float PredictionMs,
-    bool AutoPrediction = false);
+    bool AutoPrediction = false,
+    PointerSettings? Pointer = null,
+    bool TwoFingerUndo = true,
+    bool ThreeFingerRedo = true,
+    long PalmMs = PalmRejection.GraceMs,
+    float PalmSizeDips = PalmRejection.PalmSize,
+    bool ShapeSnap = true,
+    int ShapeHoldMs = 600,
+    bool SnapLineAngles = true,
+    TiltSettings? Tilt = null);
 
 /// <summary>Callbacks from the ink thread. The engine always invokes them on the UI thread.</summary>
 public interface IInkEngineHost
@@ -50,6 +59,8 @@ public interface IInkEngineHost
     void OnContextMenuRequested(Windows.Foundation.Point position, bool hasSelection, bool canPaste);
     void OnPageShown(long pageId, string title, PageLayout layout);
     void OnStatus(string message);
+    /// <summary>The mouse or pen entered or left the page (used to hide the Windows cursor when Nib draws its own).</summary>
+    void OnPageHoverChanged(bool over);
 }
 
 /// <summary>
@@ -98,6 +109,7 @@ internal sealed partial class InkEngine : ITouchGestureHandler, IDisposable
     private AutosaveTracker? _tracker;
     private DispatcherQueueTimer? _saveTimer;
     private DispatcherQueueTimer? _settleTimer;
+    private DispatcherQueueTimer? _holdTimer; // watches for the pen resting at the end of a stroke (shape snapping)
     private long _requestedPageId;
     private bool _renderQueued;
     private long _pendingInputTicks;
@@ -152,6 +164,7 @@ internal sealed partial class InkEngine : ITouchGestureHandler, IDisposable
                 PerfCounters.Instance.ToolApply.Record((Stopwatch.GetTimestamp() - t) * 1000.0 / Stopwatch.Frequency);
                 if (old.Kind != value.Kind) OnToolKindChanged(value.Kind);
                 ApplyPrediction(value);
+                ApplyUserTuning(value);
             });
         }
     }
@@ -183,10 +196,11 @@ internal sealed partial class InkEngine : ITouchGestureHandler, IDisposable
             _input.PointerEntered += OnPointerEntered;
             _input.PointerCaptureLost += OnPointerCaptureLost;
             _input.PointerWheelChanged += OnPointerWheelChanged;
-            _input.Cursor = InputSystemCursor.Create(InputSystemCursorShape.Cross);
+            ApplyCursorShape(Tool);
             _predictor = PointerPredictor.CreateForInputPointerSource(_input);
             _lastRefreshHz = PerfCounters.Instance.RefreshHz;
             ApplyPrediction(Tool);
+            ApplyUserTuning(Tool);
             _perf = new PerformanceMode(_ink);
             _perf.Configure(_perfEnabled, _perfCores);
 
@@ -199,6 +213,11 @@ internal sealed partial class InkEngine : ITouchGestureHandler, IDisposable
             _settleTimer.Interval = TimeSpan.FromMilliseconds(120);
             _settleTimer.IsRepeating = false;
             _settleTimer.Tick += (_, _) => SettleZoom();
+
+            _holdTimer = _ink.CreateTimer();
+            _holdTimer.Interval = TimeSpan.FromMilliseconds(80);
+            _holdTimer.IsRepeating = true;
+            _holdTimer.Tick += (_, _) => OnHoldTick();
 
             if (onFirstFrame is not null) FramePresentedOnce(onFirstFrame);
             RequestRender();
@@ -289,6 +308,19 @@ internal sealed partial class InkEngine : ITouchGestureHandler, IDisposable
         _perfCores = performanceCores;
         _perf?.Configure(performanceMode, performanceCores);
     });
+
+    /// <summary>Pointer look and palm rejection come from user settings; applied on the ink thread.</summary>
+    private void ApplyUserTuning(ToolState tool)
+    {
+        ApplyCursorShape(tool);
+        _palm.Grace = Math.Clamp(tool.PalmMs, 0, 3000);
+        _palm.Size = Math.Clamp(tool.PalmSizeDips, 10f, 200f);
+        if (_renderer is not null)
+        {
+            var p = (tool.Pointer ?? new PointerSettings()).Sanitized();
+            if (p != _renderer.Pointer) { _renderer.Pointer = p; RequestRender(); }
+        }
+    }
 
     private void ApplyPrediction(ToolState tool)
     {
@@ -720,6 +752,7 @@ internal sealed partial class InkEngine : ITouchGestureHandler, IDisposable
     {
         _renderQueued = false;
         if (_renderer is null || _page is null) return;
+        if (_eraseQueue.Count > 0) FlushErase(); // the eraser sweep gathered since the last frame, applied as one edit
         long now = Stopwatch.GetTimestamp();
         if (_inertia.IsActive)
         {

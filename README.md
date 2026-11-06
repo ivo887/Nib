@@ -42,6 +42,19 @@ dotnet test tests\Nib.Core.Tests -c Release
 .\perf\run-perf.ps1 -Label "my device"
 ```
 
+## Installer
+
+```powershell
+.\installer\build-installer.ps1                  # artifacts\Nib-0.1.0-x64.msi, runs on any x64 PC
+.\installer\build-installer.ps1 -Cpu lunarlake   # tuned for Core Ultra 200V only (AVX2/BMI2/FMA)
+.\installer\build-installer.ps1 -Platform ARM64
+```
+
+A per-user MSI (no admin rights): installs to `%LOCALAPPDATA%\Programs\Nib`, adds a Start menu shortcut,
+upgrades in place when the version in `Directory.Build.props` goes up, and never touches your notebooks in
+`%LOCALAPPDATA%\Nib`. It is built with WiX 6 as a repo-local tool (`dotnet-tools.json`); WiX 7 asks for an
+OSMF EULA acceptance, so the version is pinned to 6.0.2. The installer is unsigned, so SmartScreen may warn.
+
 In Visual Studio, open `Nib.sln`, choose **x64** or **ARM64**, set **Nib.App** as the startup project,
 and press F5.
 
@@ -52,16 +65,62 @@ Data is stored in `%LOCALAPPDATA%\Nib\` as `notebooks.db` (SQLite), `settings.js
 
 ## Using it
 
-* **Toolbar:** favorite pens, highlighter, eraser, lasso, text, undo/redo, and the overflow menu (⋯),
-  which holds insert space, page setup, export and settings. Tap the active tool again to edit it (kind, color, width, pressure curve, tilt,
-  stabilizer, with a live preview). **+** adds a favorite pen. The toolbar docks top, bottom, left or
-  right (overflow → Toolbar position).
+* **Toolbar:** by default favorite pens, highlighter, eraser, lasso, text, undo/redo, zoom, insert space, full-screen focus mode,
+  settings and the overflow menu (⋯). Tap the active tool again to edit it (kind, color, width, pressure
+  curve, tilt, stabilizer, with a live preview). **+** adds a favorite pen. Choose which buttons show, and in
+  what order, in Settings → Toolbar (page setup, export, focus mode and the sidebar toggle can be added
+  too). The ⋯ menu is grouped as Page, Text and tags, Export PDF and View.
+* **Layout (OneNote style):** a **notebook rail** on the left (badges and names), **section tabs** along the top
+  (colored edge, drag to reorder, right-click for rename / color / move / export), and the **page list** on the
+  right (subpages indented, drag to reorder). Notebooks are customized the same way as sections: drag to reorder,
+  right-click for rename, color, page defaults, export and delete (the last notebook cannot be deleted). The title bar has a **notebook › section ▾** navigator that opens a
+  dropdown with all three levels. Wide windows show everything; as the window narrows the page list becomes a
+  drawer (the page icon at the end of the section bar), then the notebook list shrinks to badges, then hides
+  behind the ☰ button, and the tabs fold into one dropdown. Settings → Toolbar swaps the sides for left-handed
+  use and can keep either list collapsed. The look is Windows 11: Mica material, a floating rounded toolbar and
+  the page as a bordered card.
+* **Full-screen focus mode (F11):** the title bar, tabs and lists disappear and the toolbar becomes a floating
+  **dock** (on the edge chosen under Toolbar position) with the notebook / section / page navigator first, a
+  sidebar button that brings both lists back as drawers, and an exit button before the ⋯ menu.
+* **Window:** follows the screen. Maximized windows follow the work area as the taskbar moves, resizes or
+  auto-hides, and so does a restored window that filled it; no window can be made smaller than 480 × 360 DIPs;
+  placement is remembered per monitor; the toolbar shrinks its buttons (or moves to the bottom edge) when the
+  title bar is too narrow for it.
+* **Settings** (gear button, or ⋯ → Settings) has sections: **Pen** (eraser type and size, barrel button,
+  prediction), **Pointer** (style: nib outline, dot, crosshair, ring or none; size: follow the pen or
+  fixed; color: pen color or custom with opacity and thickness; the Windows cursor: automatic (hidden while Nib draws its own pointer), cross, arrow or hidden (while hidden, the system cross is briefly made transparent and restored when the pointer leaves the page, the window loses focus or Nib closes, even after a crash); optional center dot; show it while drawing or
+  only while hovering; live preview), **Touch** (finger drawing, palm rejection delay and size, two- and
+  three-finger tap gestures), **Toolbar** (position, button size, buttons and order, sidebar side),
+  **Appearance** (theme, window material: Mica, Mica Alt, Acrylic or solid), **Shortcuts** (click a box and press the new key combination; duplicates are refused)
+  and **Device**.
+* **Shape and line snapping:** draw a line, circle, ellipse, triangle or rectangle and keep the pen still for a
+  moment (default 0.6 s): it turns into the clean shape, drawn with the same pen. Lines and boxes lock to
+  horizontal, vertical and 45 degrees when close, and a snapped line keeps following the pen until you lift,
+  so you can set its length. Marks that are not clearly a shape are left alone. Switch it on and off with the
+  toolbar button (◇), ⋯ → Page → Snap to shapes and lines, or Settings → Pen, where the hold time and angle
+  locking are set.
+* **Nib types:** tap the active pen to open its flyout and pick one of seven nibs, each with its own width and
+  feel (unless you customized them): **Ballpoint** (even line, ignores tilt), **Fountain** (flat nib), **Pencil**
+  (lean it to shade), **Brush** (press to spread the bristles, lean to lay them flat), **Calligraphy** (crisp
+  chisel edge that turns with tilt and barrel twist), **Marker** (translucent felt tip that broadens when
+  leaned) and **Watercolor** (a pale wash that sits under your ink: press for pigment, lean to spread it). The
+  chosen color shows a tick and a ring, and the preview stroke sweeps the tilt so you can see what each nib does.
+* **Tilt:** every nib except the ballpoint reacts to how the pen is held (tilt, and barrel twist for
+  calligraphy), at the strength set per pen in its flyout. Settings → Pen → Pen tilt switches tilt off, sets a
+  dead zone so a held-still pen does not jitter, and flips the left/right or up/down axis for digitizers that
+  report it the other way round.
+* **Saving and exporting:** Settings → Saving moves the notebook folder (OneDrive, another drive, a network folder:
+  your notebooks and settings are copied there at the next start and your old copy is kept), backs up all
+  notebooks to one `.nibpkg` file and restores from one, and sets the default export format (**PDF**, **PNG**
+  at 96 to 600 dpi, or **SVG**), whether to include the paper pattern, and whether exports ask where to save or
+  go straight to a folder. ⋯ → Export PDF… exports the page, section or notebook in that format (sections and
+  notebooks as PNG/SVG go into a folder, one image per sheet).
 * **Pen:** the tail eraser just works. The barrel button is set in Settings. Hovering shows the nib.
 * **Touch:** two fingers pan and pinch. Two-finger tap undoes, three-finger tap redoes. A finger never
   draws unless you turn on *Draw with finger* in Settings.
 * **Page setup** (overflow menu): background, line spacing, grid size, colors, margin line, paper
   size, orientation, or infinite canvas. Apply it to the page, the section or the notebook.
-* **Shortcuts** (OneNote defaults; remap them in `settings.json` under `"KeyMap"`): Ctrl+N new page,
+* **Shortcuts** (OneNote defaults; change them in Settings → Shortcuts): Ctrl+N new page,
   Ctrl+Alt+N subpage, Ctrl+T section, Ctrl+Alt+[ / ] promote/demote, Ctrl+PgUp/PgDn previous/next page,
   Ctrl+1–5 tags, Ctrl+Z/Y, Ctrl+Shift+E export PDF, Ctrl+Shift+B sidebar, F11 focus mode.
 
@@ -111,5 +170,4 @@ What was checked before handing this over:
 * Deferred to v1 (see the roadmap): search, thumbnails, section-group UI, custom tags, text format bar,
   tables, images and printouts, Ink to Text/Shape/Math, ruler, curve editor and calibration, links,
   Quick Note, recycle bin UI, PNG/SVG/Markdown export, print, import.
-* Shortcut remapping has no settings UI yet; edit `settings.json`.
 * Page content isn't exposed to Narrator yet (the toolbar, sidebar and dialogs are).

@@ -40,6 +40,36 @@ public sealed record PenPreset
     /// <summary>Stabilizer strength 0 (raw) .. 1 (very smooth, more lag).</summary>
     public float Stabilizer { get; init; } = 0.2f;
 
+    /// <summary>The width and feel a nib type starts with.</summary>
+    public static (float Width, PenDynamics Dynamics) DefaultsFor(PenKind kind) => kind switch
+    {
+        PenKind.Fountain => (3.2f, new PenDynamics { MinWidthRatio = 0.25f }),
+        PenKind.Pencil => (1.6f, new PenDynamics { MinWidthRatio = 0.6f, TiltSensitivity = 0.8f }),
+        PenKind.Highlighter => (14f, new PenDynamics { MinWidthRatio = 0.75f, TiltSensitivity = 0.5f }),
+        PenKind.Brush => (4f, new PenDynamics { MinWidthRatio = 0.08f, TiltSensitivity = 0.85f }),
+        PenKind.Calligraphy => (4.5f, new PenDynamics { MinWidthRatio = 0.6f, TiltSensitivity = 0.7f }),
+        PenKind.Marker => (6f, new PenDynamics { MinWidthRatio = 0.8f, TiltSensitivity = 0.6f }),
+        PenKind.Watercolor => (12f, new PenDynamics { MinWidthRatio = 0.45f, TiltSensitivity = 0.85f }),
+        _ => (1.8f, PenDynamics.Default),
+    };
+
+    /// <summary>
+    /// Switches the nib type. Width and dynamics move to the new nib's defaults unless the user had customized
+    /// them, so the change is visible straight away (a fountain nib at a ballpoint's width looks like nothing changed).
+    /// </summary>
+    public PenPreset WithKind(PenKind kind)
+    {
+        if (kind == Kind) return this;
+        var (oldWidth, oldDyn) = DefaultsFor(Kind);
+        var (newWidth, newDyn) = DefaultsFor(kind);
+        return this with
+        {
+            Kind = kind,
+            Width = Math.Abs(Width - oldWidth) < 0.05f ? newWidth : Width,
+            Dynamics = Dynamics.Equals(oldDyn) ? newDyn : Dynamics,
+        };
+    }
+
     public static PenPreset[] DefaultFavorites() => new[]
     {
         new PenPreset { Kind = PenKind.Ballpoint, Color = 0xFF1F1F1F, Width = 1.8f },

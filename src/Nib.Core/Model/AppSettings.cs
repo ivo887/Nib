@@ -34,13 +34,58 @@ public sealed class AppSettings
     /// </summary>
     public bool PerformanceModeWhileWriting { get; set; } = true;
 
+    /// <summary>Palm rejection: touch is ignored while the pen is near and for this long after it leaves (ms).</summary>
+    public int PalmRejectionMs { get; set; } = 450;
+    /// <summary>Touch contacts wider or taller than this (DIPs) are treated as a palm.</summary>
+    public float PalmSizeDips { get; set; } = 34f;
+    public bool TwoFingerTapUndo { get; set; } = true;
+    public bool ThreeFingerTapRedo { get; set; } = true;
+
+    /// <summary>Hold the pen still at the end of a stroke and it snaps to a line, circle, ellipse, triangle or rectangle.</summary>
+    public bool ShapeSnap { get; set; } = true;
+    /// <summary>How long the pen must rest before it snaps (ms).</summary>
+    public int ShapeSnapHoldMs { get; set; } = 600;
+    /// <summary>Snapped lines and rectangles lock to horizontal, vertical and 45 degrees when close.</summary>
+    public bool SnapLineAngles { get; set; } = true;
+
+    // Saving and exporting
+    /// <summary>Format used by the Export commands.</summary>
+    public ExportFormat ExportFormat { get; set; } = ExportFormat.Pdf;
+    /// <summary>Resolution for PNG export (dots per inch).</summary>
+    public int PngDpi { get; set; } = 150;
+    /// <summary>Paper patterns (lines, grids) are included in exports.</summary>
+    public bool ExportBackground { get; set; } = true;
+    /// <summary>When true every export asks where to save; when false it goes to <see cref="ExportFolder"/>.</summary>
+    public bool AskExportLocation { get; set; } = true;
+    /// <summary>Default export folder; null uses the Documents folder.</summary>
+    public string? ExportFolder { get; set; }
+
+    /// <summary>Pen tilt: on/off, dead zone and axis inversion.</summary>
+    public TiltSettings Tilt { get; set; } = new();
+
+    /// <summary>Hover pointer: style, size, color.</summary>
+    public PointerSettings Pointer { get; set; } = new();
+
+    /// <summary>Toolbar buttons, in order ("|" is a divider). See <see cref="ToolbarLayout"/>.</summary>
+    public List<string> ToolbarItems { get; set; } = new(ToolbarLayout.Default);
+    /// <summary>Which defaults the toolbar list has been migrated to (see <see cref="ToolbarLayout.Migrate"/>).</summary>
+    public int ToolbarVersion { get; set; }
+    /// <summary>Toolbar button size in DIPs; 0 picks it automatically (larger in tablet posture).</summary>
+    public int ToolbarButtonSize { get; set; }
+
     // Layout
     public DockSide ToolbarDock { get; set; } = DockSide.Top;
     public bool SidebarOnRight { get; set; }
     public bool SidebarCollapsed { get; set; }
+    /// <summary>Show the notebook rail as a thin strip of badges even when the window is wide.</summary>
+    public bool RailCompact { get; set; }
+    /// <summary>Keep the page list closed (it opens as a drawer from the section bar).</summary>
+    public bool PagesHidden { get; set; }
 
     // Appearance
     public ThemeMode Theme { get; set; } = ThemeMode.System;
+    /// <summary>Window material: Mica (default), Mica Alt, Acrylic, or a plain solid color.</summary>
+    public BackdropKind Backdrop { get; set; } = BackdropKind.Mica;
     /// <summary>In dark theme, show pages inverted (dark paper, light ink). Exports keep real colors.</summary>
     public bool InvertPagesInDarkTheme { get; set; } = true;
     /// <summary>Dark pages use pure black paper, so OLED pixels switch off (less power, no grey glow).</summary>

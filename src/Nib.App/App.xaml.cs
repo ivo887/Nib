@@ -24,6 +24,9 @@ public partial class App : Application
     {
         StartupClock.Mark("OnLaunched");
         var options = LaunchOptions.Parse(Environment.GetCommandLineArgs());
+        // A restart after changing the notebook location: wait for the old process to release its database, then apply the change.
+        if (options.WaitForPid > 0) DataLocation.WaitForPredecessor(options.WaitForPid);
+        if (options.DataFolder is null) DataLocation.ApplyPending();
         _window = new MainWindow(options);
         _window.Activate();
         StartupClock.Mark("WindowActivated");

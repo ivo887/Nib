@@ -78,6 +78,8 @@ public sealed class InkProcessor
     public InkPoint Last => _last;
     public int Count => _points.Count;
     public bool IsActive => _active;
+    /// <summary>True after <see cref="ReplacePoints"/>: the stroke was snapped to a shape and no longer takes raw samples.</summary>
+    public bool Frozen { get; private set; }
 
     /// <summary>True once the device has shown real (varying) pressure during this stroke.</summary>
     public bool SawPressureVariation => _sawPressureVariation;
@@ -120,6 +122,7 @@ public sealed class InkProcessor
         _fx = new OneEuroFilter(minCutoff, beta);
         _fy = new OneEuroFilter(minCutoff, beta);
         _points.Clear();
+        Frozen = false;
         _t0 = _lastT = s.TimestampUs;
         _pressure = s.Pressure;
         _tiltX = s.TiltX;
@@ -139,7 +142,7 @@ public sealed class InkProcessor
     /// <summary>Adds a sample; returns false if it was a duplicate and dropped.</summary>
     public bool Add(in RawSample s)
     {
-        if (!_active) return false;
+        if (!_active || Frozen) return false;
         if (s.TimestampUs < _lastT) return false; // out-of-order duplicate
         float dt = (s.TimestampUs - _lastT) / 1_000_000f;
         _lastT = s.TimestampUs;
@@ -169,7 +172,7 @@ public sealed class InkProcessor
     {
         _active = false;
         float dx = _lastRaw.X - _last.X, dy = _lastRaw.Y - _last.Y;
-        if (_points.Count > 1 && dx * dx + dy * dy > 0.01f)
+        if (!Frozen && _points.Count > 1 && dx * dx + dy * dy > 0.01f)
         {
             var p = _last;
             p.X = _lastRaw.X; p.Y = _lastRaw.Y;
@@ -179,9 +182,23 @@ public sealed class InkProcessor
         return _points.ToArray();
     }
 
+    /// <summary>
+    /// Replaces everything written so far (used to snap the stroke to a clean shape). The stroke is frozen: later raw
+    /// samples are ignored, but it can be replaced again (a snapped line follows the pen until it lifts).
+    /// </summary>
+    public void ReplacePoints(ReadOnlySpan<InkPoint> pts)
+    {
+        if (!_active || pts.Length == 0) return;
+        _points.Clear();
+        for (int i = 0; i < pts.Length; i++) _points.Add(pts[i]);
+        _last = pts[^1];
+        Frozen = true;
+    }
+
     public void Cancel()
     {
         _active = false;
+        Frozen = false;
         _points.Clear();
     }
 

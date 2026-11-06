@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Nib.App.Ink;
 using Nib.App.Shell;
 using Nib.Core.Model;
 
@@ -21,7 +22,11 @@ public sealed partial class MainWindow
         var sb = SidebarControl;
         sb.NotebookSelected += nb => _ = SelectNotebookAsync(nb, null);
         sb.SectionSelected += s => _ = SelectSectionAsync(s.Info, null);
-        sb.PageSelected += p => OpenPage(p.Id);
+        sb.PageSelected += p => { OpenPage(p.Id); CloseDrawers(); };
+        sb.PagesToggleRequested += TogglePages;
+        RailSplit.PaneOpening += (_, _) => { RailControl.Expanded = true; if (RailSplit.DisplayMode != SplitViewDisplayMode.Inline) RailSplit.PaneBackground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Colors2D.From(Root.ActualTheme == ElementTheme.Dark ? 0xFF2B2B2B : 0xFFFAFAFA)); };
+        RailSplit.PaneClosed += (_, _) => { _railDrawerOpen = false; if (RailSplit.DisplayMode == SplitViewDisplayMode.CompactOverlay) { RailControl.Expanded = false; RailSplit.PaneBackground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent); } };
+        PageSplit.PaneClosed += (_, _) => { _pagesDrawerOpen = false; TabsControl.PagesShown = PageSplit.IsPaneOpen; };
         sb.AddNotebookRequested += () => _ = NewNotebookAsync();
         sb.AddSectionRequested += () => _ = NewSectionAsync();
         sb.AddPageRequested += () => _ = NewPageAsync(0);
@@ -29,6 +34,8 @@ public sealed partial class MainWindow
         sb.RecentRequested += () => _ = ShowPageListAsync(recent: true);
         sb.FavoritesRequested += () => _ = ShowPageListAsync(recent: false);
         sb.SectionCommand += (item, cmd) => _ = SectionCommandAsync(item, cmd);
+        sb.NotebookCommand += (id, cmd) => _ = NotebookCommandAsync(id, cmd);
+        sb.NotebooksReordered += ids => _ = ReorderNotebooksAsync(ids);
         sb.PageCommand += (item, cmd) => _ = PageCommandAsync(item, cmd);
         sb.SectionsReordered += items => _storage?.Write(s => s.ReorderSections(items.Select(i => i.Id).ToList()));
         sb.PagesReordered += items => _storage?.Write(s => s.ReorderPages(items.Select(i => i.Id).ToList()));
@@ -63,6 +70,7 @@ public sealed partial class MainWindow
     private async Task SelectNotebookAsync(NotebookInfo nb, long? sectionId, long? pageId = null)
     {
         _notebook = nb;
+        UpdateNavText();
         SidebarControl.SelectNotebook(nb.Id);
         var sections = await _storage!.Read(s => s.ListSections(nb.Id));
         SidebarControl.Sections.Clear();
@@ -79,6 +87,7 @@ public sealed partial class MainWindow
     private async Task SelectSectionAsync(SectionInfo section, long? pageId)
     {
         _section = section;
+        UpdateNavText();
         SidebarControl.SelectSection(section.Id);
         var pages = await _storage!.Read(s => s.ListPages(section.Id));
         SidebarControl.Pages.Clear();
@@ -164,7 +173,7 @@ public sealed partial class MainWindow
         if (name is null) return;
         var nb = await _storage.Write(s =>
         {
-            var created = s.CreateNotebook(name, 0xFF7A5AF8);
+            var created = s.CreateNotebook(name, SectionColors.ForIndex(SidebarControl.Notebooks.Count));
             s.CreateSection(created.Id, null, "New Section", SectionColors.ForIndex(0));
             return created;
         });
@@ -264,8 +273,7 @@ public sealed partial class MainWindow
             case "export":
             {
                 if (_export is null || _engine is null) return;
-                var path = await _export.ExportSection(_engine, item.Info, _exportBackground);
-                if (path is not null) ShowToast("Exported " + System.IO.Path.GetFileName(path));
+                await RunExportAsync(() => _export.ExportSection(_engine, item.Info));
                 return;
             }
             case "delete":
@@ -276,6 +284,76 @@ public sealed partial class MainWindow
             }
         }
         if (_notebook is not null) await SelectNotebookAsync(_notebook, cmd == "delete" ? null : _section?.Id);
+    }
+
+    /// <summary>The notebook right-click menu (rename, color, page defaults, export, delete), the same set the sections have.</summary>
+    private async Task NotebookCommandAsync(long id, string cmd)
+    {
+        var storage = _storage!;
+        var nb = SidebarControl.Notebooks.FirstOrDefault(n => n.Id == id);
+        if (nb is null) return;
+
+        void Replace(NotebookInfo updated)
+        {
+            int i = SidebarControl.Notebooks.IndexOf(nb);
+            if (i >= 0) SidebarControl.Notebooks[i] = updated;
+            if (_notebook?.Id == id) { _notebook = updated; UpdateNavText(); }
+        }
+
+        if (cmd.StartsWith("color:", StringComparison.Ordinal))
+        {
+            uint color = SectionColors.ForIndex(int.Parse(cmd.AsSpan(6)));
+            await storage.Write(s => s.SetNotebookColor(id, color));
+            Replace(nb with { Color = color });
+            return;
+        }
+        switch (cmd)
+        {
+            case "rename":
+            {
+                var name = await PromptAsync("Rename notebook", "Name", nb.Name);
+                if (name is null) return;
+                await storage.Write(s => s.RenameNotebook(id, name));
+                Replace(nb with { Name = name });
+                return;
+            }
+            case "defaults":
+            {
+                var result = await PageSetupDialogAsync(PageDefaults.ResolveNewPage(nb.Defaults, null), forDefaults: true);
+                if (result is null) return;
+                var d = ToDefaults(result.Value.Layout);
+                await storage.Write(s => s.SetNotebookDefaults(id, d));
+                Replace(nb with { Defaults = d });
+                ShowToast("New pages in this notebook will use these settings");
+                return;
+            }
+            case "export":
+            {
+                if (_export is null || _engine is null) return;
+                await RunExportAsync(() => _export.ExportNotebook(_engine, nb));
+                return;
+            }
+            case "delete":
+            {
+                if (SidebarControl.Notebooks.Count <= 1) { ShowToast("Keep at least one notebook"); return; }
+                if (!await ConfirmAsync("Delete notebook?", $"\"{nb.Name}\" and everything in it moves to the recycle bin.")) return;
+                await storage.Write(s => s.DeleteNotebook(id));
+                bool wasOpen = _notebook?.Id == id;
+                SidebarControl.Notebooks.Remove(nb);
+                if (wasOpen) await SelectNotebookAsync(SidebarControl.Notebooks.First(), null);
+                return;
+            }
+        }
+    }
+
+    /// <summary>Saves the order after a drag in the rail and reloads the list so every view agrees with it.</summary>
+    private async Task ReorderNotebooksAsync(IReadOnlyList<long> idsInOrder)
+    {
+        if (_storage is null) return;
+        var list = await _storage.Write(s => { s.ReorderNotebooks(idsInOrder); return s.ListNotebooks(); });
+        SidebarControl.Notebooks.Clear();
+        foreach (var n in list) SidebarControl.Notebooks.Add(n);
+        SidebarControl.SelectNotebook(_notebook?.Id ?? 0);
     }
 
     internal static PageDefaults ToDefaults(PageLayout l) => new()
@@ -319,7 +397,7 @@ public sealed partial class MainWindow
                 _ = NavigateToPageAsync(pageId);
             }
         };
-        flyout.ShowAt(SidebarControl);
+        flyout.ShowAt(RailControl);
     }
 
     private async Task ShowPageListAsync(bool recent)
@@ -334,7 +412,7 @@ public sealed partial class MainWindow
             menu.Items.Add(mi);
         }
         if (pages.Count == 0) menu.Items.Add(new MenuFlyoutItem { Text = recent ? "No recent pages" : "No favorites yet", IsEnabled = false });
-        menu.ShowAt(SidebarControl);
+        menu.ShowAt(RailControl);
     }
 
     private async Task<SectionInfo?> PickSectionAsync(string title)
@@ -343,7 +421,7 @@ public sealed partial class MainWindow
         var combo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var (nb, sec) in all) combo.Items.Add($"{nb.Name} › {sec.Name}");
         combo.SelectedIndex = 0;
-        var dialog = new ContentDialog { Title = title, Content = combo, PrimaryButtonText = "Move", CloseButtonText = "Cancel", XamlRoot = Root.XamlRoot, DefaultButton = ContentDialogButton.Primary };
+        var dialog = new ContentDialog { Title = title, Content = combo, PrimaryButtonText = "Move", CloseButtonText = "Cancel", XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme, DefaultButton = ContentDialogButton.Primary };
         return await dialog.ShowAsync() == ContentDialogResult.Primary && combo.SelectedIndex >= 0 ? all[combo.SelectedIndex].sec : null;
     }
 
@@ -352,14 +430,14 @@ public sealed partial class MainWindow
         var combo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var nb in SidebarControl.Notebooks) combo.Items.Add(nb.Name);
         combo.SelectedIndex = 0;
-        var dialog = new ContentDialog { Title = title, Content = combo, PrimaryButtonText = "Move", CloseButtonText = "Cancel", XamlRoot = Root.XamlRoot, DefaultButton = ContentDialogButton.Primary };
+        var dialog = new ContentDialog { Title = title, Content = combo, PrimaryButtonText = "Move", CloseButtonText = "Cancel", XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme, DefaultButton = ContentDialogButton.Primary };
         return await dialog.ShowAsync() == ContentDialogResult.Primary && combo.SelectedIndex >= 0 ? SidebarControl.Notebooks[combo.SelectedIndex] : null;
     }
 
     private async Task<string?> PromptAsync(string title, string label, string initial)
     {
         var box = new TextBox { Header = label, Text = initial, SelectionStart = 0, SelectionLength = initial.Length };
-        var dialog = new ContentDialog { Title = title, Content = box, PrimaryButtonText = "OK", CloseButtonText = "Cancel", XamlRoot = Root.XamlRoot, DefaultButton = ContentDialogButton.Primary };
+        var dialog = new ContentDialog { Title = title, Content = box, PrimaryButtonText = "OK", CloseButtonText = "Cancel", XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme, DefaultButton = ContentDialogButton.Primary };
         dialog.Opened += (_, _) => box.Focus(FocusState.Programmatic);
         var r = await dialog.ShowAsync();
         string text = box.Text.Trim();
@@ -368,7 +446,7 @@ public sealed partial class MainWindow
 
     private async Task<bool> ConfirmAsync(string title, string message)
     {
-        var dialog = new ContentDialog { Title = title, Content = message, PrimaryButtonText = "Delete", CloseButtonText = "Cancel", XamlRoot = Root.XamlRoot, DefaultButton = ContentDialogButton.Close };
+        var dialog = new ContentDialog { Title = title, Content = message, PrimaryButtonText = "Delete", CloseButtonText = "Cancel", XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme, DefaultButton = ContentDialogButton.Close };
         return await dialog.ShowAsync() == ContentDialogResult.Primary;
     }
 }

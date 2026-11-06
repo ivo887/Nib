@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-user MSI for Nib: installs to %LOCALAPPDATA%\Programs\Nib, no admin rights needed, adds a Start menu
+  shortcut, and upgrades in place (same UpgradeCode, higher Version). Notebooks live in %LOCALAPPDATA%\Nib
+  and are never touched by install, upgrade or uninstall.
+  Build with installer\build-installer.ps1.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Nib" Manufacturer="Nib" Version="$(Version)"
+           UpgradeCode="00c28849-332e-446b-ba7f-609536a7a5e6"
+           Scope="perUser" Compressed="yes" InstallerVersion="500">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Nib is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="NibIcon" SourceFile="$(IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="NibIcon" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Nib" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="*">
+        <Shortcut Id="NibShortcut" Name="Nib" Description="Pen-first note-taking"
+                  Target="[INSTALLFOLDER]Nib.exe" WorkingDirectory="INSTALLFOLDER" Icon="NibIcon" />
+        <RegistryValue Root="HKCU" Key="Software\Nib" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(SourceDir)\**">
+        <Exclude Files="$(SourceDir)\**\*.pdb" />
+      </Files>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="Nib" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>
