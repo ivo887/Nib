@@ -160,6 +160,10 @@ public sealed class PerfMeasurements
     public double? WarmStartMs { get; set; }
     public List<double> PageSwitchMs { get; set; } = new();
     public List<double> ToolApplyMs { get; set; } = new();
+    /// <summary>Time to build and present each frame (percentiles 1..100).</summary>
+    public List<double> RenderMs { get; set; } = new();
+    /// <summary>Time between consecutive presented frames while busy (percentiles 1..100).</summary>
+    public List<double> FrameIntervalMs { get; set; } = new();
     public List<int> ResizeReflowFrames { get; set; } = new();
 }
 

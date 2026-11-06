@@ -29,8 +29,39 @@ internal sealed class StrokeVisual : IDisposable
         Runs = runs;
     }
 
+    private CanvasCachedGeometry?[]? _cached;
+    private static int s_cachedRuns;
+    /// <summary>Tessellations kept at once across all pages: bounds GPU memory on very large pages (beyond it, fills draw uncached).</summary>
+    private const int MaxCachedRuns = 6000;
+
+    /// <summary>
+    /// The tessellated fill of run <paramref name="i"/>, or null when the global cap is reached. A stroke is a union of many
+    /// overlapping outlines, which is slow to tessellate; doing it once and reusing the result makes every later tile
+    /// repaint (zoom, page switch, eraser) cheap.
+    /// </summary>
+    public CanvasCachedGeometry? TryFill(int i)
+    {
+        var cache = _cached ??= new CanvasCachedGeometry?[Geometries.Length];
+        if (cache[i] is { } c) return c;
+        if (System.Threading.Interlocked.Increment(ref s_cachedRuns) > MaxCachedRuns)
+        {
+            System.Threading.Interlocked.Decrement(ref s_cachedRuns);
+            return null;
+        }
+        return cache[i] = CanvasCachedGeometry.CreateFill(Geometries[i], FlatteningTolerance);
+    }
+
+    /// <summary>Builds every cached fill now (called off the UI/ink thread when a page is preloaded).</summary>
+    public void Warm() { for (int i = 0; i < Geometries.Length; i++) TryFill(i); }
+
+    /// <summary>Fine enough to stay smooth up to about 5x zoom (page units).</summary>
+    private const float FlatteningTolerance = 0.05f;
+
     public void Dispose()
     {
+        if (_cached is not null)
+            foreach (var c in _cached)
+                if (c is not null) { c.Dispose(); System.Threading.Interlocked.Decrement(ref s_cachedRuns); }
         foreach (var g in Geometries) g.Dispose();
     }
 }

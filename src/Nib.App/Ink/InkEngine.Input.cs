@@ -52,6 +52,7 @@ internal sealed partial class InkEngine
     private void OnPointerPressed(InputPointerSource sender, PointerEventArgs args)
     {
         if (_page is null || _renderer is null) return;
+        DrainCommits();
         var pt = args.CurrentPoint;
         var props = pt.Properties;
         var screen = new Vector2((float)pt.Position.X, (float)pt.Position.Y);
@@ -589,10 +590,41 @@ internal sealed partial class InkEngine
         if (_page is null || _renderer is null || !_processor.IsActive) return;
         var pts = _processor.End();
         var stroke = new Stroke(IdGenerator.Next(), _page.NextZ(), _wet.Kind, _wet.Color, _wet.Width, _wet.Dynamics, _processor.Flags, pts);
-        _renderer.EndWet();
-        // Tiles receive the stroke incrementally in the same frame the wet layer disappears: no flicker.
-        _page.Execute(StrokesCommand.Add(stroke));
         _lastPagePoint = new Vector2(pts[^1].X, pts[^1].Y + 24);
+        // Turning the stroke into tessellated geometry costs 1-10 ms, which would make the pen-up frame late. A worker does
+        // it while the wet ink stays on screen; then, in one frame, the wet layer goes and the stroke joins the page and
+        // the tiles (no flicker). Anything that touches the page before that calls DrainCommits() first.
+        _renderer.Predicted.Clear();
+        var commit = new PendingCommit(_page, stroke);
+        _commits.Add(commit);
+        _renderer.PrepareAsync(new[] { stroke }, () => FinishCommit(commit));
+    }
+
+    private sealed class PendingCommit
+    {
+        public readonly Page Page;
+        public readonly Stroke Stroke;
+        public bool Done;
+        public PendingCommit(Page page, Stroke stroke) { Page = page; Stroke = stroke; }
+    }
+
+    private readonly List<PendingCommit> _commits = new(2);
+
+    private void FinishCommit(PendingCommit c)
+    {
+        if (c.Done) return;
+        c.Done = true;
+        _commits.Remove(c);
+        if (_renderer is null) return;
+        if (_mode != Mode.Ink) _renderer.EndWet();
+        c.Page.Execute(StrokesCommand.Add(c.Stroke));
+        RequestRender();
+    }
+
+    /// <summary>Completes strokes still being prepared (a few ms at most), so the page is whole before it is read or changed.</summary>
+    private void DrainCommits()
+    {
+        while (_commits.Count > 0) FinishCommit(_commits[0]);
     }
 
     // ---- erasers ----
@@ -960,6 +992,7 @@ internal sealed partial class InkEngine
     {
         if (_page is null) return;
         var t = Tool;
+        DrainCommits();
         if (fingers == 2 && t.TwoFingerUndo && _page.UndoLast()) _host.Post(_ui, h => h.OnStatus("Undo"));
         else if (fingers == 3 && t.ThreeFingerRedo && _page.RedoLast()) _host.Post(_ui, h => h.OnStatus("Redo"));
         ClearSelection();

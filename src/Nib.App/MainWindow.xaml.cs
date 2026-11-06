@@ -16,6 +16,7 @@ using Nib.App.Text;
 using Nib.App.Windowing;
 using Nib.Core.Device;
 using Nib.Core.Diagnostics;
+using Nib.Core.Ink;
 using Nib.Core.Input;
 using Nib.Core.Layout;
 using Nib.Core.Model;
@@ -93,7 +94,7 @@ public sealed partial class MainWindow : Window, IInkEngineHost
         _windows.AppWindow.Closing += OnClosing;
         // Never leave the cursor hidden when focus moves to another window or Nib closes.
         Activated += (_, e) => { if (e.WindowActivationState == WindowActivationState.Deactivated) { _pointerOverPage = false; UpdateSystemCursor(); } };
-        Closed += (_, _) => { _pointerOverPage = false; UpdateSystemCursor(); if (Platform.CursorHider.IsBlank) Platform.CursorHider.Restore(); };
+        Closed += (_, _) => { _pointerOverPage = false; _cursorRestoreTimer?.Stop(); _cursorHidden = false; Platform.CursorHider.RestoreNow(); };
         Activated += OnFirstActivated;
 
         _toastTimer = _ui.CreateTimer();
@@ -228,6 +229,7 @@ public sealed partial class MainWindow : Window, IInkEngineHost
         }, () => { _ui.TryEnqueue(Close); });
         _harness.Measurements.PredictionMs = Settings.PredictionMs;
         _harness.PredictionFor = hz => DeviceTuner.EffectivePredictionMs(Settings, hz);
+        _harness.ApplyTool = ApplyPerfTool;
         _watchdog.Start();
         _engine!.FramePresented += _ =>
         {
@@ -235,6 +237,24 @@ public sealed partial class MainWindow : Window, IInkEngineHost
             float rendered = _engine.LastFrameWidth;
             _ui.TryEnqueue(() => _harness?.OnFramePresentedAfterResize(Math.Abs(InkPanel.ActualWidth - rendered) < 1));
         };
+    }
+
+    /// <summary>Perf runs only: selects "pen:&lt;PenKind&gt;", "highlighter" or "eraser:pixel|stroke".</summary>
+    private void ApplyPerfTool(string name)
+    {
+        if (name.StartsWith("pen:", StringComparison.Ordinal) && Enum.TryParse<PenKind>(name.AsSpan(4), out var kind))
+        {
+            int i = Math.Clamp(Settings.ActivePen, 0, Settings.Pens.Count - 1);
+            Settings.Pens[i] = Settings.Pens[i].WithKind(kind);
+            _toolbar.SetActive(ToolKind.Pen, i);
+            PushTool();
+        }
+        else if (name == "highlighter") SelectTool(ToolKind.Highlighter);
+        else if (name.StartsWith("eraser:", StringComparison.Ordinal))
+        {
+            Settings.EraserMode = name.EndsWith("pixel", StringComparison.Ordinal) ? EraserMode.Pixel : EraserMode.Stroke;
+            SelectTool(ToolKind.Eraser);
+        }
     }
 
     private void OnClosing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -580,7 +600,7 @@ public sealed partial class MainWindow : Window, IInkEngineHost
             ApplyDock(Settings.ToolbarDock);
         }
         // A floating toolbar keeps fitting as the window is dragged narrower, and grows back when there is room again.
-        else if (EdgeToolbarHost.Content == _toolbar && _toolbar.Orientation == Orientation.Horizontal)
+        else if (ReferenceEquals(EdgeToolbarHost.Content, _toolbar) && _toolbar.Orientation == Orientation.Horizontal)
         {
             double space = ToolbarSpace();
             bool shrink = _toolbarWidth > space && _toolbar.ButtonSize > 28;
@@ -739,6 +759,15 @@ public sealed partial class MainWindow : Window, IInkEngineHost
             Root.KeyboardAccelerators.Add(acc);
             _accelerators.Add((action, acc));
         }
+        // Esc steps back: an open drawer first, then focus mode (the text editor keeps Esc for itself).
+        var esc = new KeyboardAccelerator { Key = Windows.System.VirtualKey.Escape };
+        esc.Invoked += (_, args) =>
+        {
+            if (_editor is { IsEditing: true }) return;
+            if (_railDrawerOpen || _pagesDrawerOpen) { _railDrawerOpen = _pagesDrawerOpen = false; ApplyResponsiveLayout(); args.Handled = true; }
+            else if (_focus) { ToggleFocusMode(); args.Handled = true; }
+        };
+        Root.KeyboardAccelerators.Add(esc);
         Root.KeyboardAcceleratorPlacementMode = KeyboardAcceleratorPlacementMode.Hidden;
     }
 
@@ -935,21 +964,40 @@ public sealed partial class MainWindow : Window, IInkEngineHost
     public void OnPageHoverChanged(bool over)
     {
         _pointerOverPage = over;
-        UpdateSystemCursor();
+        UpdateSystemCursor(immediate: false);
     }
 
     /// <summary>
     /// Hides the Windows cursor over the page when the user chose Hidden, or Automatic with a Nib-drawn pointer
     /// (so the cross is not drawn on top of it). The text tool always keeps its I-beam.
     /// </summary>
-    private void UpdateSystemCursor()
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _cursorRestoreTimer;
+
+    private void UpdateSystemCursor(bool immediate = true)
     {
         var p = Settings.Pointer;
         bool hideMode = p.SystemCursor == SystemCursorMode.Hidden || (p.SystemCursor == SystemCursorMode.Auto && p.Style != PointerStyle.None);
         bool hide = _pointerOverPage && hideMode && _toolbar.ActiveKind != ToolKind.Text;
-        if (hide == _cursorHidden) return;
-        _cursorHidden = hide;
-        if (hide) Platform.CursorHider.Blank(); else Platform.CursorHider.Restore();
+        if (hide)
+        {
+            _cursorRestoreTimer?.Stop(); // the pen came back: keep the cursor hidden, nothing to do
+            if (_cursorHidden) return;
+            _cursorHidden = true;
+            Platform.CursorHider.BlankAsync();
+            return;
+        }
+        if (!_cursorHidden) return;
+        if (immediate) { _cursorRestoreTimer?.Stop(); _cursorHidden = false; Platform.CursorHider.RestoreAsync(); return; }
+        // A pen lifting out of range and coming back is not leaving the page: wait before putting the cursor back.
+        if (_cursorRestoreTimer is null)
+        {
+            _cursorRestoreTimer = _ui.CreateTimer();
+            _cursorRestoreTimer.Interval = TimeSpan.FromMilliseconds(600);
+            _cursorRestoreTimer.IsRepeating = false;
+            _cursorRestoreTimer.Tick += (_, _) => UpdateSystemCursor(immediate: true);
+        }
+        _cursorRestoreTimer.Stop();
+        _cursorRestoreTimer.Start();
     }
 
     private void ShowToast(string message)

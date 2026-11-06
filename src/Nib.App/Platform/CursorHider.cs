@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 
 namespace Nib.App.Platform;
 
@@ -30,6 +31,22 @@ internal static class CursorHider
     }
 
     public static bool IsBlank => _blank;
+
+    // The system calls take ~20 ms (reloading every cursor), so the UI thread hands them to a worker, in order.
+    private static readonly object s_gate = new();
+    private static Task s_chain = Task.CompletedTask;
+    private static void Enqueue(Action op) { lock (s_gate) s_chain = s_chain.ContinueWith(_ => op(), TaskScheduler.Default); }
+    public static void BlankAsync() => Enqueue(Blank);
+    public static void RestoreAsync() => Enqueue(Restore);
+
+    /// <summary>For shutdown: waits for queued work, then puts the cursor back before returning.</summary>
+    public static void RestoreNow()
+    {
+        Task pending;
+        lock (s_gate) pending = s_chain;
+        try { pending.Wait(1000); } catch (Exception) { }
+        if (_blank) Restore();
+    }
 
     public static void Blank()
     {

@@ -15,6 +15,7 @@ using Nib.PerfRunner;
 // target. Exit code 0 = all targets met, 1 = a target was missed, 2 = the run could not complete.
 
 string? app = null, targets = null, outDir = "perf-results", label = Environment.MachineName;
+bool tools = false; string? only = null;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -23,6 +24,8 @@ for (int i = 0; i < args.Length; i++)
         case "--targets": targets = args[++i]; break;
         case "--out": outDir = args[++i]; break;
         case "--label": label = args[++i]; break;
+        case "--tools": tools = true; break;
+        case "--only": only = args[++i]; break;
     }
 }
 if (app is null || !File.Exists(app))
@@ -40,6 +43,9 @@ Directory.CreateDirectory(outDir);
 string data = Path.Combine(outDir, "data");
 if (Directory.Exists(data)) Directory.Delete(data, recursive: true);
 Directory.CreateDirectory(data);
+
+Injection.UseFineTimer();
+if (tools) return ProfileTools(app, outDir, only);
 
 try
 {
@@ -90,7 +96,8 @@ static PerfMeasurements RunApp(string app, string data, string folder, Action<In
     Thread.Sleep(50);
     var info = JsonDocument.Parse(File.ReadAllText(ready)).RootElement;
     var hwnd = new IntPtr(info.GetProperty("hwnd").GetInt64());
-    Keys.SetForegroundWindow(hwnd);
+    bool front = Keys.Front(hwnd);
+    Console.WriteLine(front ? "  Nib is the foreground window" : "  WARNING: Nib could not take the foreground; injected input will not reach it");
     Thread.Sleep(300);
     drive?.Invoke(hwnd, info);
     File.WriteAllText(Path.Combine(folder, "done"), "");
@@ -105,12 +112,12 @@ static void Drive(IntPtr hwnd, JsonElement s)
     int w = s.GetProperty("width").GetInt32(), h = s.GetProperty("height").GetInt32();
 
     // Pen latency: 40 strokes with pressure and tilt, written down the page.
-    Console.WriteLine("  pen strokes");
+    Console.WriteLine("  pen strokes"); Mark("pen strokes");
     for (int i = 0; i < 40; i++)
         Injection.PenStroke(x + w / 8, y + 80 + (i % 20) * (h - 160) / 20, w * 3 / 4, 120, i % 2 == 0 ? 0 : 40);
 
     // Pan and zoom smoothness: two-finger drags and pinches.
-    Console.WriteLine("  touch pan / zoom");
+    Console.WriteLine("  touch pan / zoom"); Mark("touch pan / zoom");
     for (int i = 0; i < 4; i++)
     {
         Injection.TwoFingerPan(x + w / 2, y + h * 3 / 4, -h / 2, 60);
@@ -124,7 +131,7 @@ static void Drive(IntPtr hwnd, JsonElement s)
     Thread.Sleep(300);
 
     // Page switching: create pages, then flip through them (preloaded neighbours).
-    Console.WriteLine("  page switching");
+    Console.WriteLine("  page switching"); Mark("page switching");
     for (int i = 0; i < 5; i++) { Keys.Chord(Keys.VK_CONTROL, Keys.VK_N); Thread.Sleep(250); }
     for (int round = 0; round < 3; round++)
     {
@@ -133,10 +140,53 @@ static void Drive(IntPtr hwnd, JsonElement s)
     }
 
     // Resize / reflow: portrait-ish, wide, back.
-    Console.WriteLine("  resize");
+    Console.WriteLine("  resize"); Mark("resize");
     foreach (var (rw, rh) in new[] { (900, 1200), (1600, 800), (1200, 900), (1400, 1000) })
     {
         Keys.Resize(hwnd, rw, rh);
         Thread.Sleep(400);
     }
+}
+
+static void Mark(string what)
+{
+    if (Environment.GetEnvironmentVariable("NIB_RASTER_LOG") is { } lp)
+        try { File.AppendAllText(lp, $"{DateTime.UtcNow:HH:mm:ss.fff} PHASE {what}" + Environment.NewLine); } catch { }
+}
+
+// Per-tool profile: every nib, brush and eraser mode gets its own run of 40 injected pen strokes (the eraser first
+// gets a page full of ink to cut), and the frame cost of each is reported on its own.
+static int ProfileTools(string app, string outDir, string? only)
+{
+    string[] tools = { "pen:Ballpoint", "pen:Fountain", "pen:Pencil", "pen:Brush", "pen:Calligraphy", "pen:Marker", "pen:Watercolor", "highlighter", "eraser:stroke", "eraser:pixel" };
+    Console.WriteLine($"{"Tool",-16} {"in>present p50/p95/max",-24} {"render p50/p95/p99/max",-30} {"frame gap p95/p99/max",-26}");
+    foreach (var tool in tools)
+    {
+        if (only is not null && !tool.Contains(only, StringComparison.OrdinalIgnoreCase)) continue;
+        string data = Path.Combine(outDir, "tooldata");
+        if (Directory.Exists(data)) Directory.Delete(data, true);
+        Directory.CreateDirectory(data);
+        string folder = Path.Combine(outDir, "tool-" + tool.Replace(':', '-'));
+        var m = RunApp(app, data, folder, (hwnd, s) => ToolDrive(tool, folder, s));
+        string P(System.Collections.Generic.List<double> l, params int[] ps) =>
+            l.Count == 0 ? "-" : string.Join("/", ps.Select(p => l[Math.Min(p, l.Count) - 1].ToString("0.0")));
+        Console.WriteLine($"{tool,-16} {P(m.InputToPresentMs, 50, 95, 100),-24} {P(m.RenderMs, 50, 95, 99, 100),-30} {P(m.FrameIntervalMs, 95, 99, 100),-26}");
+    }
+    return 0;
+}
+
+static void ToolDrive(string tool, string folder, JsonElement s)
+{
+    int x = s.GetProperty("x").GetInt32(), y = s.GetProperty("y").GetInt32();
+    int w = s.GetProperty("width").GetInt32(), h = s.GetProperty("height").GetInt32();
+    bool erase = tool.StartsWith("eraser", StringComparison.Ordinal);
+    if (erase)
+    {
+        for (int i = 0; i < 24; i++) Injection.PenStroke(x + w / 8, y + 80 + i * (h - 160) / 24, w * 3 / 4, 120, 0);
+        Thread.Sleep(500);
+    }
+    File.WriteAllText(Path.Combine(folder, "tool"), tool);
+    Thread.Sleep(800); // applied on the UI thread's next poll, which also clears the counters
+    for (int i = 0; i < 40; i++)
+        Injection.PenStroke(x + w / 8, y + 80 + (i % 20) * (h - 160) / 20 + (erase ? 18 : 0), w * 3 / 4, 120, i % 2 == 0 ? 0 : 40);
 }

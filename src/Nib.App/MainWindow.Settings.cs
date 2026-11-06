@@ -352,7 +352,6 @@ public sealed partial class MainWindow
         var savingTab = Tab();
         ContentDialog? settingsDialog = null;
         bool restartRequested = false;
-        string? pendingDescription = null;
         Action? pendingAction = null;
 
         savingTab.Children.Add(Header("Where your notebooks are stored"));

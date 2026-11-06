@@ -183,6 +183,8 @@ internal sealed partial class InkEngine : ITouchGestureHandler, IDisposable
             DeviceDescription = desc;
             _device.DeviceLost += (_, _) => _ink.TryEnqueue(RecreateDevice);
             _renderer = new PageRenderer(_device) { Tags = _tags, WetPoints = () => _processor.PointSpan };
+            _renderer.PostToInk = a => _ink.TryEnqueue(() => a());
+            _renderer.NeedFrame = RequestRender;
             _renderer.SetDarkMode(_dark, _trueBlack);
             CreateSwapChain(width, height, scale);
 
@@ -493,6 +495,7 @@ internal sealed partial class InkEngine : ITouchGestureHandler, IDisposable
     /// <summary>Writes pending changes. Runs on the ink thread: only collects the change set; disk I/O happens on the storage writer thread.</summary>
     private Task FlushAutosave()
     {
+        DrainCommits();
         _saveTimer?.Stop();
         if (_tracker is null || !_tracker.HasChanges) return Task.CompletedTask;
         return _storage.Save(_tracker.TakeChanges());
@@ -514,6 +517,7 @@ internal sealed partial class InkEngine : ITouchGestureHandler, IDisposable
     public void Undo() => _ink.TryEnqueue(() =>
     {
         if (_page is null) return;
+        DrainCommits();
         ClearSelection();
         if (_page.UndoLast()) RequestRender();
     });
@@ -521,6 +525,7 @@ internal sealed partial class InkEngine : ITouchGestureHandler, IDisposable
     public void Redo() => _ink.TryEnqueue(() =>
     {
         if (_page is null) return;
+        DrainCommits();
         ClearSelection();
         if (_page.RedoLast()) RequestRender();
     });

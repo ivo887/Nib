@@ -199,6 +199,15 @@ internal sealed class PageRenderer : IPageObserver, IDisposable
         }
         if (page.DirtyHint is { } hint)
         {
+            if (added.Count > 0 && PostToInk is not null)
+            {
+                // An eraser cut made new pieces. Building and tessellating them costs ~1 ms each, which would land in the
+                // frame being drawn; a worker does it instead and the tiles repaint once the pieces are ready. Until then
+                // they show the previous pixels (a frame or two behind the eraser, instead of a frame that takes too long).
+                long pid = page.Id;
+                PrepareAsync(added, () => { _tiles.Invalidate(pid, hint); NeedFrame?.Invoke(); });
+                return;
+            }
             // An eraser sweep changed only the area around the eraser; the rest of the old strokes looks the same.
             _tiles.Invalidate(page.Id, hint);
             return;
@@ -239,6 +248,49 @@ internal sealed class PageRenderer : IPageObserver, IDisposable
         return v;
     }
 
+    /// <summary>Set by the engine: runs an action on the ink thread / asks for another frame.</summary>
+    public Action<Action>? PostToInk;
+    public Action? NeedFrame;
+
+    /// <summary>
+    /// Builds and tessellates the visuals of <paramref name="strokes"/> on worker threads, then (on the ink thread) attaches
+    /// them and calls <paramref name="onReady"/>. Strokes that already have a visual are left alone.
+    /// </summary>
+    public void PrepareAsync(IReadOnlyList<Stroke> strokes, Action onReady)
+    {
+        var post = PostToInk;
+        var device = _device;
+        var todo = new List<Stroke>(strokes.Count);
+        foreach (var s in strokes) if (s.RenderCache is null) todo.Add(s);
+        if (todo.Count == 0 || post is null) { onReady(); return; }
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            var visuals = new StrokeVisual?[todo.Count];
+            System.Threading.Tasks.Parallel.For(0, todo.Count, i =>
+            {
+                try
+                {
+                    var sink = new Win2DRunSink(device);
+                    new StrokeGeometryBuilder().Build(todo[i], sink);
+                    var v = sink.TakeVisual();
+                    v.Warm();
+                    visuals[i] = v;
+                }
+                catch (Exception) { /* the ink thread builds it itself if this failed */ }
+            });
+            post(() =>
+            {
+                bool sameDevice = ReferenceEquals(device, _device);
+                for (int i = 0; i < todo.Count; i++)
+                {
+                    if (visuals[i] is not { } v) continue;
+                    if (sameDevice && todo[i].RenderCache is null) todo[i].RenderCache = v; else v.Dispose();
+                }
+                onReady();
+            });
+        });
+    }
+
     /// <summary>Builds stroke geometry ahead of time (called on a background thread for preloaded pages).</summary>
     public static void Prepare(CanvasDevice device, Page page, StrokeGeometryBuilder builder)
     {
@@ -247,7 +299,9 @@ internal sealed class PageRenderer : IPageObserver, IDisposable
             if (s.RenderCache is not null) continue;
             var sink = new Win2DRunSink(device);
             builder.Build(s, sink);
-            s.RenderCache = sink.TakeVisual();
+            var visual = sink.TakeVisual();
+            visual.Warm();
+            s.RenderCache = visual;
         }
     }
 
@@ -267,7 +321,31 @@ internal sealed class PageRenderer : IPageObserver, IDisposable
     private void DrawStroke(CanvasDrawingSession ds, Stroke s)
     {
         var v = GetVisual(s);
-        for (int i = 0; i < v.Geometries.Length; i++) FillRun(ds, v.Geometries[i], v.Runs[i]);
+        for (int i = 0; i < v.Geometries.Length; i++)
+        {
+            var cached = v.TryFill(i);
+            if (cached is not null) FillRun(ds, cached, v.Runs[i]);
+            else FillRun(ds, v.Geometries[i], v.Runs[i]);
+        }
+    }
+
+    private void FillRun(CanvasDrawingSession ds, CanvasCachedGeometry g, in StrokeRun run)
+    {
+        if (run.Multiply)
+        {
+            if (!DarkMode)
+            {
+                ds.Blend = CanvasBlend.Min;
+                ds.DrawCachedGeometry(g, Colors2D.From(run.FillColor));
+                ds.Blend = CanvasBlend.SourceOver;
+            }
+            else
+            {
+                uint c = ColorUtil.ToDarkMode(run.BaseColor, TrueBlack);
+                ds.DrawCachedGeometry(g, Colors2D.From((c & 0x00FFFFFF) | ((uint)(run.Strength * 200) << 24)));
+            }
+        }
+        else ds.DrawCachedGeometry(g, Colors2D.From(Map(run.FillColor)));
     }
 
     private void FillRun(CanvasDrawingSession ds, CanvasGeometry g, in StrokeRun run)

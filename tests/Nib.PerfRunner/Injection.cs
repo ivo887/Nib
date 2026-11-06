@@ -111,6 +111,10 @@ internal static unsafe class Injection
             throw new InvalidOperationException($"Pen injection failed (error {Marshal.GetLastWin32Error()}). Is the window visible and is the desktop unlocked?");
     }
 
+    [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint ms);
+    /// <summary>Thread.Sleep(4) otherwise lasts ~15.6 ms, which would make the fake pen report at 60 Hz instead of ~240 Hz.</summary>
+    public static void UseFineTimer() => timeBeginPeriod(1);
+
     /// <summary>Draws one handwriting-like stroke at the device report rate (~240 Hz).</summary>
     public static void PenStroke(int x0, int y0, int length, int samples, int tilt)
     {
@@ -211,6 +215,25 @@ internal static unsafe class Keys
 
     [DllImport("user32.dll")] private static extern uint SendInput(uint count, INPUT* inputs, int size);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int cmd);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint a, uint b, bool attach);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hwnd);
+
+    /// <summary>Brings the window to the front even when another process holds the foreground lock; true when it got there.</summary>
+    public static bool Front(IntPtr hwnd)
+    {
+        ShowWindow(hwnd, 9);
+        uint fgThread = GetWindowThreadProcessId(GetForegroundWindow(), out _), me = GetCurrentThreadId();
+        AttachThreadInput(me, fgThread, true);
+        BringWindowToTop(hwnd);
+        SetForegroundWindow(hwnd);
+        AttachThreadInput(me, fgThread, false);
+        System.Threading.Thread.Sleep(300);
+        return GetForegroundWindow() == hwnd;
+    }
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
 

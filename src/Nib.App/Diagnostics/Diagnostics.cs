@@ -151,8 +151,19 @@ internal sealed class PerfHarness
     /// <summary>Prediction horizon in use when the run ends (automatic prediction follows the refresh rate).</summary>
     public Func<double, float>? PredictionFor { get; set; }
 
+    /// <summary>Applies a tool by name ("pen:Brush", "highlighter", "eraser:pixel"); lets the runner profile each tool in turn.</summary>
+    public Action<string>? ApplyTool { get; set; }
+
     private void Poll()
     {
+        string toolFile = Path.Combine(_folder, "tool");
+        if (File.Exists(toolFile))
+        {
+            string name = File.ReadAllText(toolFile).Trim();
+            File.Delete(toolFile);
+            ApplyTool?.Invoke(name);
+            PerfCounters.Instance.ResetAll(); // the next numbers belong to this tool only
+        }
         if (!File.Exists(Path.Combine(_folder, "done"))) return;
         _poll.Stop();
         var pc = PerfCounters.Instance;
@@ -166,6 +177,8 @@ internal sealed class PerfHarness
         Dump(pc.UiStall, m.UiStallsMs);
         Dump(pc.PageSwitch, m.PageSwitchMs);
         Dump(pc.ToolApply, m.ToolApplyMs);
+        Dump(pc.RenderTime, m.RenderMs);
+        Dump(pc.FrameInterval, m.FrameIntervalMs);
         File.WriteAllText(Path.Combine(_folder, "measurements.json"), JsonSerializer.Serialize(m, NibJsonContext.Default.PerfMeasurements));
         _exit();
     }
